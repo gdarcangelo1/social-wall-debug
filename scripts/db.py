@@ -83,6 +83,9 @@ def ensure_db(db_path):
                 screenshot_path TEXT,
                 embed_html TEXT,
                 collection_method TEXT,
+                discovery_rank INTEGER,
+                collection_run_id TEXT,
+                item_type TEXT,
                 status TEXT DEFAULT 'ok',
                 error_message TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -111,6 +114,15 @@ def ensure_db(db_path):
             );
             """
         )
+        existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(social_posts)").fetchall()}
+        missing_columns = {
+            "discovery_rank": "INTEGER",
+            "collection_run_id": "TEXT",
+            "item_type": "TEXT",
+        }
+        for column, column_type in missing_columns.items():
+            if column not in existing_columns:
+                conn.execute(f"ALTER TABLE social_posts ADD COLUMN {column} {column_type}")
     return Path(db_path)
 
 
@@ -309,6 +321,9 @@ def upsert_social_post(
     screenshot_path=None,
     embed_html=None,
     collection_method=None,
+    discovery_rank=None,
+    collection_run_id=None,
+    item_type=None,
     status="ok",
     error_message=None,
 ):
@@ -320,8 +335,8 @@ def upsert_social_post(
             INSERT INTO social_posts
                 (id_societa, societa, platform, account_url, post_url, post_id, post_date, title,
                  text, author, media_url, thumbnail_url, screenshot_path, embed_html,
-                 collection_method, status, error_message, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 collection_method, discovery_rank, collection_run_id, item_type, status, error_message, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(platform, post_url) DO UPDATE SET
                 id_societa = excluded.id_societa,
                 societa = excluded.societa,
@@ -336,6 +351,9 @@ def upsert_social_post(
                 screenshot_path = excluded.screenshot_path,
                 embed_html = excluded.embed_html,
                 collection_method = excluded.collection_method,
+                discovery_rank = excluded.discovery_rank,
+                collection_run_id = excluded.collection_run_id,
+                item_type = excluded.item_type,
                 status = excluded.status,
                 error_message = excluded.error_message,
                 updated_at = excluded.updated_at
@@ -356,6 +374,9 @@ def upsert_social_post(
                 screenshot_path,
                 embed_html,
                 collection_method,
+                discovery_rank,
+                collection_run_id,
+                item_type,
                 status,
                 error_message,
                 now,
