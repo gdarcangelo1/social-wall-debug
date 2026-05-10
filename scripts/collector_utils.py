@@ -3,7 +3,7 @@
 
 import html
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, quote, urljoin, urlsplit, urlunsplit
 
 from db import connect_db, ensure_db, normalize_url, query_accounts, resolve_effective_date_range
@@ -98,6 +98,22 @@ def canonicalize_url_without_query_noise(url, keep_query_keys=None):
     return normalize_url(urlunsplit((parts.scheme, parts.netloc, path, new_query, "")))
 
 
+ITALIAN_MONTHS = {
+    "gennaio": 1,
+    "febbraio": 2,
+    "marzo": 3,
+    "aprile": 4,
+    "maggio": 5,
+    "giugno": 6,
+    "luglio": 7,
+    "agosto": 8,
+    "settembre": 9,
+    "ottobre": 10,
+    "novembre": 11,
+    "dicembre": 12,
+}
+
+
 def parse_visible_date(text):
     """Best-effort parser for visible social timestamps; returns (date, confident)."""
     if not text:
@@ -105,12 +121,34 @@ def parse_visible_date(text):
     raw = " ".join(str(text).strip().split())
     if not raw:
         return None, False
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%d %b %Y"):
+
+    iso_datetime = re.search(r"\b(20\d{2}-\d{1,2}-\d{1,2})(?:[T\s]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?", raw)
+    if iso_datetime:
         try:
-            return datetime.strptime(raw[:30], fmt).date().isoformat(), True
+            return datetime.fromisoformat(iso_datetime.group(0).replace("Z", "+00:00")).date().isoformat(), True
+        except ValueError:
+            try:
+                return datetime.strptime(iso_datetime.group(1), "%Y-%m-%d").date().isoformat(), True
+            except ValueError:
+                pass
+
+    for fmt in (
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%B %d, %Y",
+        "%b %d, %Y",
+        "%d %B %Y",
+        "%d %b %Y",
+        "%d %B, %Y",
+        "%d %b, %Y",
+    ):
+        try:
+            return datetime.strptime(raw[:40], fmt).date().isoformat(), True
         except ValueError:
             pass
-    iso = re.search(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})", raw)
+
+    iso = re.search(r"\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b", raw)
     if iso:
         y, m, d = iso.groups()
         try:
@@ -124,13 +162,27 @@ def parse_visible_date(text):
             return datetime(int(y), int(m), int(d)).date().isoformat(), True
         except ValueError:
             pass
+
     lower = raw.lower()
-    if re.search(r"\b(\d+\s*)?(min|minute|minutes|h|hr|hour|hours|giorn|day|days|sett|week|weeks|mese|month|months)\b", lower):
+    month_names = "|".join(ITALIAN_MONTHS)
+    italian = re.search(rf"\b(\d{{1,2}})\s+(?:di\s+)?({month_names})\s+(20\d{{2}})\b", lower)
+    if italian:
+        d, month_name, y = italian.groups()
+        try:
+            return datetime(int(y), ITALIAN_MONTHS[month_name], int(d)).date().isoformat(), True
+        except ValueError:
+            pass
+
+    relative = re.search(
+        r"\b(\d+\s*)?(s|min|minute|minutes|m|h|hr|hour|hours|ora|ore|giorn|day|days|d|sett|week|weeks|settimane|mese|mesi|month|months)\b",
+        lower,
+    )
+    if relative:
         return None, False
     if "yesterday" in lower or "ieri" in lower:
-        return (datetime.utcnow().date() - timedelta(days=1)).isoformat(), False
+        return (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat(), False
     if "today" in lower or "oggi" in lower:
-        return datetime.utcnow().date().isoformat(), False
+        return datetime.now(timezone.utc).date().isoformat(), False
     return None, False
 
 

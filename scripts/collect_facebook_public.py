@@ -37,6 +37,110 @@ def is_facebook_post_url(url):
     return any(pattern in path for pattern in POST_PATTERNS)
 
 
+def merge_detail(link_title, link_text, link_date, link_confident, detail):
+    title = detail.get("title") or link_title
+    text = detail.get("text") or link_text
+    post_date = detail.get("post_date") or link_date
+    confident = detail.get("confident") if detail.get("post_date") else link_confident
+    return title, text, post_date, confident, detail.get("author"), detail.get("error_message")
+
+
+async def first_meta_content(page, selectors):
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count():
+                value = await locator.get_attribute("content", timeout=1200)
+                if value:
+                    return value
+        except Exception:
+            continue
+    return None
+
+
+async def extract_facebook_detail(detail_page, post_url):
+    detail = {"post_date": None, "confident": False, "text": None, "title": None, "author": None, "error_message": None}
+    try:
+        await detail_page.goto(post_url, wait_until="domcontentloaded", timeout=45000)
+        await click_cookie_buttons(detail_page)
+        body_text = await page_text_limited(detail_page)
+        if BLOCK_RE.search(body_text):
+            detail["error_message"] = "Facebook detail page blocked or rate-limited."
+            return detail, "blocked"
+        if LOGIN_RE.search(body_text) and not await detail_page.locator("time, abbr, div[role='article']").count():
+            detail["error_message"] = "Facebook detail page requires login."
+            return detail, "login"
+
+        try:
+            article = detail_page.locator("div[role='article'], article").first
+            if await article.count():
+                article_text = short_text(await article.inner_text(timeout=2500), 2000)
+                if article_text:
+                    detail["text"] = article_text
+                    detail["title"] = article_text[:90]
+        except Exception:
+            pass
+        if not detail["text"]:
+            meta_text = await first_meta_content(
+                detail_page,
+                ["meta[property='og:description']", "meta[name='description']", "meta[property='twitter:description']"],
+            )
+            if meta_text:
+                detail["text"] = short_text(meta_text, 2000)
+                detail["title"] = short_text(meta_text, 90)
+        try:
+            author = await detail_page.locator("strong a, h1 a, div[role='article'] a[role='link']").first.inner_text(timeout=1500)
+            detail["author"] = short_text(author, 200)
+        except Exception:
+            pass
+
+        probes = [
+            ("abbr[title]", "title"),
+            ("time[datetime]", "datetime"),
+            ("a[aria-label]", "aria-label"),
+            ("span[aria-label]", "aria-label"),
+        ]
+        for selector, attr in probes:
+            try:
+                nodes = detail_page.locator(selector)
+                count = min(await nodes.count(), 20)
+            except Exception:
+                count = 0
+            for idx in range(count):
+                try:
+                    value = await nodes.nth(idx).get_attribute(attr, timeout=800)
+                except Exception:
+                    value = None
+                post_date, confident = parse_visible_date(value)
+                if post_date:
+                    detail.update({"post_date": post_date, "confident": confident})
+                    return detail, None
+        meta_date = await first_meta_content(detail_page, ["meta[property='article:published_time']"])
+        post_date, confident = parse_visible_date(meta_date)
+        if post_date:
+            detail.update({"post_date": post_date, "confident": confident})
+            return detail, None
+
+        try:
+            links = detail_page.locator("div[role='article'] a, article a")
+            count = min(await links.count(), 30)
+        except Exception:
+            count = 0
+        for idx in range(count):
+            try:
+                value = await links.nth(idx).inner_text(timeout=600)
+            except Exception:
+                value = None
+            post_date, confident = parse_visible_date(value)
+            if post_date:
+                detail.update({"post_date": post_date, "confident": confident})
+                return detail, None
+        return detail, None
+    except Exception as exc:
+        detail["error_message"] = f"Facebook detail extraction failed: {exc}"
+        return detail, "failed"
+
+
 def facebook_post_id(url):
     parts = urlsplit(url)
     query = parse_qs(parts.query)
@@ -122,38 +226,64 @@ async def scan_account(browser, account, args, date_from, date_to, summary):
             summary["no_public_posts_found"] += 1
             print(f"no_public_posts_found: {account.get('societa')} ({account_url})")
             return
-        for post_url, (title, text, post_date, confident) in seen.items():
-            summary["candidate_urls_found"] += 1
-            range_state = in_date_range(post_date, date_from, date_to)
-            if post_date and confident and range_state is True:
-                status = "ok"
-            elif post_date and range_state is False:
-                status = "date_out_of_range"
-            elif post_date:
-                status = "date_uncertain"
-            else:
-                status = "candidate"
-            if not should_insert_status(status, args.keep_out_of_range):
-                summary["skipped_out_of_range"] += 1
-                continue
-            result = upsert_social_post(
-                args.db,
-                id_societa=account.get("id_societa"),
-                societa=account.get("societa") or "Unknown society",
-                platform="facebook",
-                account_url=account_url,
-                post_url=post_url,
-                post_id=facebook_post_id(post_url),
-                post_date=post_date,
-                title=title,
-                text=text,
-                embed_html=facebook_embed(post_url),
-                collection_method="playwright",
-                status=status,
-                error_message=None if status != "date_uncertain" else "Date parsed from uncertain visible timestamp.",
-            )
-            if result in {"inserted", "updated"}:
-                summary["inserted_updated"] += 1
+        detail_page = await browser.new_page(viewport={"width": 1365, "height": 900})
+        try:
+            for post_url, (title, text, post_date, confident) in seen.items():
+                summary["candidate_urls_found"] += 1
+                summary["detail_pages_opened"] += 1
+                detail, failure = await extract_facebook_detail(detail_page, post_url)
+                if failure == "login":
+                    summary["login_required"] += 1
+                    summary["login_block_failures"] += 1
+                elif failure == "blocked":
+                    summary["temporarily_blocked"] += 1
+                    summary["login_block_failures"] += 1
+                elif failure == "failed":
+                    summary["failed"] += 1
+                title, text, post_date, confident, author, error_message = merge_detail(
+                    title, text, post_date, confident, detail
+                )
+                if post_date:
+                    summary["dates_extracted"] += 1
+                range_state = in_date_range(post_date, date_from, date_to)
+                if post_date and confident and range_state is True:
+                    status = "ok"
+                elif post_date and range_state is False:
+                    status = "date_out_of_range"
+                elif post_date:
+                    status = "date_uncertain"
+                elif title or text or author or error_message:
+                    status = "date_uncertain"
+                else:
+                    status = "candidate"
+                if not should_insert_status(status, args.keep_out_of_range):
+                    summary["skipped_out_of_range"] += 1
+                    continue
+                if status == "ok":
+                    summary["rows_ok"] += 1
+                elif status in {"date_uncertain", "candidate"}:
+                    summary["left_uncertain_candidate"] += 1
+                result = upsert_social_post(
+                    args.db,
+                    id_societa=account.get("id_societa"),
+                    societa=account.get("societa") or "Unknown society",
+                    platform="facebook",
+                    account_url=account_url,
+                    post_url=post_url,
+                    post_id=facebook_post_id(post_url),
+                    post_date=post_date,
+                    title=title,
+                    text=text,
+                    author=author,
+                    embed_html=facebook_embed(post_url),
+                    collection_method="playwright",
+                    status=status,
+                    error_message=error_message if status != "ok" else None,
+                )
+                if result in {"inserted", "updated"}:
+                    summary["inserted_updated"] += 1
+        finally:
+            await detail_page.close()
     except Exception as exc:
         summary["failed"] += 1
         print(f"failed: {account.get('societa')} ({account_url}): {exc}")
@@ -169,7 +299,12 @@ async def collect_async(args):
         "accounts_scanned": 0,
         "candidate_urls_found": 0,
         "inserted_updated": 0,
+        "detail_pages_opened": 0,
+        "dates_extracted": 0,
+        "rows_ok": 0,
+        "left_uncertain_candidate": 0,
         "skipped_out_of_range": 0,
+        "login_block_failures": 0,
         "login_required": 0,
         "temporarily_blocked": 0,
         "no_public_posts_found": 0,
@@ -182,8 +317,13 @@ async def collect_async(args):
         for label, key in (
             ("accounts scanned", "accounts_scanned"),
             ("candidate URLs found", "candidate_urls_found"),
+            ("detail pages opened", "detail_pages_opened"),
+            ("dates extracted", "dates_extracted"),
+            ("rows updated to ok", "rows_ok"),
+            ("rows left date_uncertain/candidate", "left_uncertain_candidate"),
             ("inserted/updated rows", "inserted_updated"),
             ("skipped out-of-range", "skipped_out_of_range"),
+            ("login/block failures", "login_block_failures"),
             ("login_required accounts", "login_required"),
             ("temporarily_blocked accounts", "temporarily_blocked"),
             ("no_public_posts_found accounts", "no_public_posts_found"),
@@ -208,8 +348,13 @@ async def collect_async(args):
     for label, key in (
         ("accounts scanned", "accounts_scanned"),
         ("candidate URLs found", "candidate_urls_found"),
+        ("detail pages opened", "detail_pages_opened"),
+        ("dates extracted", "dates_extracted"),
+        ("rows updated to ok", "rows_ok"),
+        ("rows left date_uncertain/candidate", "left_uncertain_candidate"),
         ("inserted/updated rows", "inserted_updated"),
         ("skipped out-of-range", "skipped_out_of_range"),
+        ("login/block failures", "login_block_failures"),
         ("login_required accounts", "login_required"),
         ("temporarily_blocked accounts", "temporarily_blocked"),
         ("no_public_posts_found accounts", "no_public_posts_found"),
