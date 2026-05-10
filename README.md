@@ -130,6 +130,70 @@ Run from the repository root after importing:
 sqlite3 data/social_wall.db "select competition_code, count(*) from competition_matches group by competition_code;"
 ```
 
+
+## Manual post ingestion
+
+Manual ingestion is the always-available fallback for public Facebook, Instagram and YouTube posts. It does not require API keys.
+
+Create `data/raw/manual_posts.csv` with the supported columns. Minimal example:
+
+```csv
+societa,platform,post_url,post_date,title,text
+Migliarino Volley,facebook,https://www.facebook.com/...,2026-04-10,Match day,Post text
+```
+
+Supported columns are:
+
+- `societa`
+- `id_societa` optional
+- `platform` optional; inferred from `post_url` when missing
+- `account_url` optional
+- `post_url`
+- `post_date` optional
+- `title` optional
+- `text` optional
+- `thumbnail_url` optional
+- `screenshot_path` optional
+
+Run from the repository root:
+
+```bash
+python3 scripts/ingest_manual_posts.py \
+  --csv data/raw/manual_posts.csv \
+  --db data/social_wall.db
+```
+
+The ingester upserts by `platform + post_url`, normalizes dates where possible, stores `date_missing` or `date_invalid` statuses when needed, creates YouTube video ids and iframe HTML for common YouTube URL formats, creates simple Facebook embed iframe HTML, and leaves Instagram posts as normal link fallbacks.
+
+## Collect YouTube videos
+
+The YouTube collector reads `social_accounts` rows where `platform='youtube'` and uses the YouTube Data API when `YOUTUBE_API_KEY` is available in the environment. Secrets must only be passed through the environment.
+
+Set the API key and collect videos for a date range:
+
+```bash
+export YOUTUBE_API_KEY=...
+
+python3 scripts/collect_youtube.py \
+  --db data/social_wall.db \
+  --date-from 2026-04-01 \
+  --date-to 2026-04-30
+```
+
+Optional flags:
+
+- `--societa TEXT` filters accounts by case-insensitive society substring.
+- `--max-results 50` limits videos per account.
+- `--require-api-key` exits non-zero if `YOUTUBE_API_KEY` is missing. Without this flag, a missing key is reported clearly and the script exits normally.
+
+After either manual ingestion or YouTube collection, refresh the frontend JSON:
+
+```bash
+python3 scripts/export_posts_json.py \
+  --db data/social_wall.db \
+  --out data/posts.json
+```
+
 ## Export frontend JSON
 
 Run from the repository root:
@@ -194,4 +258,6 @@ Show script help:
 python3 scripts/import_accounts.py --help
 python3 scripts/import_competition.py --help
 python3 scripts/export_posts_json.py --help
+python3 scripts/ingest_manual_posts.py --help
+python3 scripts/collect_youtube.py --help
 ```
