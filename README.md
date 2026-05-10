@@ -71,6 +71,37 @@ Run from the repository root after importing:
 sqlite3 data/social_wall.db "select platform, count(*) from social_accounts group by platform;"
 ```
 
+
+## Import competition matches
+
+Run from the repository root:
+
+```bash
+python3 scripts/import_competition.py \
+  --csv data/raw/campionati/59243_debug.csv \
+  --db data/social_wall.db \
+  --competition-code 59243
+```
+
+The competition importer:
+
+- creates or updates the database schema;
+- reads the CSV with `utf-8-sig` using `csv.DictReader`;
+- maps FIPAV-style headers with case-insensitive normalized names;
+- stores each original CSV row in `competition_matches.raw_json`;
+- generates a stable synthetic match id from date, teams and row number when no match id column is available;
+- normalizes dates to `YYYY-MM-DD` where possible while preserving uncertain originals in `raw_json`;
+- stores malformed rows with status information instead of stopping the import;
+- prints a final summary.
+
+## Inspect imported competition counts
+
+Run from the repository root after importing:
+
+```bash
+sqlite3 data/social_wall.db "select competition_code, count(*) from competition_matches group by competition_code;"
+```
+
 ## Utility commands
 
 Create or update the database schema only:
@@ -83,4 +114,10 @@ Show importer help:
 
 ```bash
 python3 scripts/import_accounts.py --help
+```
+
+Show competition importer help:
+
+```bash
+python3 scripts/import_competition.py --help
 ```
