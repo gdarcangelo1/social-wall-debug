@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+data/social_wall.db
+data/posts.json
+data/screenshots/
+data/media/
+data/logs/
