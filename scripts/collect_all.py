@@ -42,6 +42,15 @@ def main():
     parser.add_argument("--max-scrolls", type=int, default=5, help="Maximum Facebook/Instagram scrolls per account")
     parser.add_argument("--max-results", type=int, default=50, help="Maximum YouTube videos per account")
     parser.add_argument("--keep-out-of-range", action="store_true", help="Store date_out_of_range candidates")
+    parser.add_argument("--debug-cards", action="store_true", help="Facebook only: print visible card diagnostics")
+    parser.add_argument("--debug-card-limit", type=int, help="Facebook only: limit debug card diagnostics")
+    parser.add_argument("--debug-links", action="store_true", help="Facebook only: print discovered link diagnostics")
+    parser.add_argument("--resolve-relative-dates", action="store_true", help="Facebook only: resolve relative timestamps")
+    parser.add_argument(
+        "--open-detail-for-missing-date",
+        action="store_true",
+        help="Facebook only: open detail pages for cards with missing dates",
+    )
     args = parser.parse_args()
     platforms = split_platforms(args.platforms)
     ensure_db(args.db)
@@ -79,6 +88,17 @@ def main():
                 cmd.append("--headful")
             if args.keep_out_of_range:
                 cmd.append("--keep-out-of-range")
+            if platform == "facebook":
+                if args.debug_cards:
+                    cmd.append("--debug-cards")
+                if args.debug_card_limit is not None:
+                    cmd.extend(["--debug-card-limit", str(args.debug_card_limit)])
+                if args.debug_links:
+                    cmd.append("--debug-links")
+                if args.resolve_relative_dates:
+                    cmd.append("--resolve-relative-dates")
+                if args.open_detail_for_missing_date:
+                    cmd.append("--open-detail-for-missing-date")
         code = run_command(cmd)
         summary[platform] = code
         if code != 0:

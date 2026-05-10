@@ -151,6 +151,57 @@ python3 scripts/collect_facebook_public.py \
   --max-posts-per-account 20
 ```
 
+Facebook-only `collect_all.py` workflow with JSON export:
+
+```bash
+sqlite3 data/social_wall.db "delete from social_posts; vacuum;"
+
+python3 scripts/collect_all.py \
+  --db data/social_wall.db \
+  --out data/posts.json \
+  --platforms facebook \
+  --max-posts-per-account 100 \
+  --max-scrolls 3 \
+  --headful \
+  --debug-links
+
+sqlite3 data/social_wall.db "
+select
+  discovery_rank,
+  item_type,
+  status,
+  post_date,
+  substr(post_url,1,140)
+from social_posts
+where platform='facebook'
+order by discovery_rank
+limit 100;
+"
+
+python3 -m http.server 8000
+```
+
+Then open:
+
+```text
+http://localhost:8000/index.html
+```
+
+Facebook-only debug card collection through `collect_all.py`:
+
+```bash
+python3 scripts/collect_all.py \
+  --db data/social_wall.db \
+  --out data/posts.json \
+  --platforms facebook \
+  --max-posts-per-account 100 \
+  --max-scrolls 3 \
+  --headful \
+  --debug-cards \
+  --debug-card-limit 10 \
+  --debug-links
+```
+
 ### Instagram public
 
 The Instagram collector is a minimal best-effort Playwright collector. It scans visible public `/p/`, `/reel/`, and `/tv/` links and stores real post candidates only.
