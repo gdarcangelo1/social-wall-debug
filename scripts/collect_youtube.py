@@ -7,19 +7,13 @@ import json
 import os
 from datetime import datetime, time, timezone
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import urlopen
 
-from db import ensure_db, normalize_url, query_accounts, upsert_social_post
+from collector_utils import filtered_accounts, resolve_range_for_args, youtube_video_id
+from db import ensure_db, normalize_url, upsert_social_post
 
 YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
-
-
-def parse_date(value, option_name):
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"{option_name} must be YYYY-MM-DD") from exc
 
 
 def iso_boundary(day, end=False):
@@ -45,9 +39,11 @@ def extract_youtube_identifier(account_url):
     candidate = account_url if "://" in account_url else f"https://{account_url}"
     parts = urlsplit(candidate)
     path_parts = [part for part in parts.path.split("/") if part]
+    query = parse_qs(parts.query)
+    if (query.get("v") or [None])[0]:
+        return "video", query["v"][0]
     if not path_parts:
         return "search", account_url
-
     first = path_parts[0]
     if first == "channel" and len(path_parts) >= 2:
         return "channel", path_parts[1]
@@ -57,8 +53,10 @@ def extract_youtube_identifier(account_url):
         return "user", path_parts[1]
     if first == "c" and len(path_parts) >= 2:
         return "custom", path_parts[1]
-    if first.startswith("@"):
-        return "handle", first
+    if first in {"watch", "shorts", "embed", "live"}:
+        video_id = youtube_video_id(account_url)
+        if video_id:
+            return "video", video_id
     return "search", path_parts[-1]
 
 
@@ -71,6 +69,11 @@ def resolve_channel_id(api_key, account_url):
     kind, value = extract_youtube_identifier(account_url)
     if kind == "channel":
         return value
+    if kind == "video":
+        response = api_get("videos", api_key, {"part": "snippet", "id": value, "maxResults": 1})
+        item = first_item(response)
+        if item:
+            return (item.get("snippet") or {}).get("channelId")
     if kind == "user":
         response = api_get("channels", api_key, {"part": "id", "forUsername": value, "maxResults": 1})
         item = first_item(response)
@@ -81,9 +84,7 @@ def resolve_channel_id(api_key, account_url):
         item = first_item(response)
         if item:
             return item.get("id")
-
-    query = value
-    response = api_get("search", api_key, {"part": "snippet", "type": "channel", "q": query, "maxResults": 1})
+    response = api_get("search", api_key, {"part": "snippet", "type": "channel", "q": value, "maxResults": 1})
     item = first_item(response)
     if item:
         return (item.get("id") or {}).get("channelId")
@@ -121,8 +122,7 @@ def published_date(value):
 def search_videos(api_key, channel_id, date_from, date_to, max_results):
     videos = []
     page_token = None
-    remaining = max_results
-    while remaining > 0:
+    while len(videos) < max_results:
         params = {
             "part": "snippet",
             "type": "video",
@@ -130,13 +130,12 @@ def search_videos(api_key, channel_id, date_from, date_to, max_results):
             "order": "date",
             "publishedAfter": iso_boundary(date_from),
             "publishedBefore": iso_boundary(date_to, end=True),
-            "maxResults": min(50, remaining),
+            "maxResults": min(50, max_results - len(videos)),
         }
         if page_token:
             params["pageToken"] = page_token
         response = api_get("search", api_key, params)
         videos.extend(response.get("items") or [])
-        remaining = max_results - len(videos)
         page_token = response.get("nextPageToken")
         if not page_token:
             break
@@ -145,28 +144,19 @@ def search_videos(api_key, channel_id, date_from, date_to, max_results):
 
 def collect(args):
     ensure_db(args.db)
+    date_from, date_to, _source = resolve_range_for_args(args)
+    accounts = filtered_accounts(args.db, "youtube", args.societa)
     api_key = os.environ.get("YOUTUBE_API_KEY")
     if not api_key:
-        print("YOUTUBE_API_KEY is not set; YouTube collection skipped.")
-        print("Use export YOUTUBE_API_KEY=... and rerun, or pass --require-api-key to fail when absent.")
+        print("api_key_missing: YOUTUBE_API_KEY is not set; YouTube collection skipped.")
         print("YouTube collection summary")
-        print("- accounts scanned: 0")
+        print(f"- accounts scanned: 0 of {len(accounts)} available")
         print("- videos inserted/updated: 0")
         print("- failures: 0")
         print("- missing API key: yes")
         return 1 if args.require_api_key else 0
 
-    date_from = parse_date(args.date_from, "--date-from")
-    date_to = parse_date(args.date_to, "--date-to")
-    if date_to < date_from:
-        raise SystemExit("--date-to must be greater than or equal to --date-from")
-
-    accounts = query_accounts(args.db, platform="youtube")
-    if args.societa:
-        needle = args.societa.casefold()
-        accounts = [account for account in accounts if needle in (account.get("societa") or "").casefold()]
-
-    summary = {"accounts_scanned": 0, "videos_upserted": 0, "failures": 0}
+    summary = {"accounts_scanned": 0, "videos_upserted": 0, "failures": 0, "api_key_missing": 0}
     for account in accounts:
         summary["accounts_scanned"] += 1
         account_url = account.get("account_url")
@@ -174,20 +164,18 @@ def collect(args):
             channel_id = resolve_channel_id(api_key, account_url)
             if not channel_id:
                 raise RuntimeError("could not resolve YouTube channel id")
-            videos = search_videos(api_key, channel_id, date_from, date_to, args.max_results)
-            for item in videos:
+            for item in search_videos(api_key, channel_id, date_from, date_to, args.max_results):
                 snippet = item.get("snippet") or {}
                 video_id = (item.get("id") or {}).get("videoId")
                 if not video_id:
                     continue
-                post_url = f"https://www.youtube.com/watch?v={video_id}"
                 result = upsert_social_post(
                     args.db,
                     id_societa=account.get("id_societa"),
                     societa=account.get("societa") or "Unknown society",
                     platform="youtube",
                     account_url=normalize_url(account_url),
-                    post_url=post_url,
+                    post_url=f"https://www.youtube.com/watch?v={video_id}",
                     post_id=video_id,
                     post_date=published_date(snippet.get("publishedAt")),
                     title=snippet.get("title"),
@@ -201,7 +189,7 @@ def collect(args):
                 )
                 if result in {"inserted", "updated"}:
                     summary["videos_upserted"] += 1
-        except Exception as exc:  # Keep one bad account from stopping the run.
+        except Exception as exc:
             summary["failures"] += 1
             print(f"Failed account {account.get('societa')} ({account_url}): {exc}")
 
@@ -216,15 +204,19 @@ def collect(args):
 def main():
     parser = argparse.ArgumentParser(description="Collect YouTube videos for imported social_accounts rows.")
     parser.add_argument("--db", default="data/social_wall.db", help="SQLite database path")
-    parser.add_argument("--date-from", required=True, help="Start date, inclusive, as YYYY-MM-DD")
-    parser.add_argument("--date-to", required=True, help="End date, inclusive, as YYYY-MM-DD")
+    parser.add_argument("--date-from", help="Start date, inclusive, as YYYY-MM-DD; defaults to competition min date")
+    parser.add_argument("--date-to", help="End date, inclusive, as YYYY-MM-DD; defaults to competition max date")
+    parser.add_argument("--competition-code", help="Limit inferred date range to one competition code")
     parser.add_argument("--societa", help="Optional case-insensitive society name substring")
     parser.add_argument("--max-results", type=int, default=50, help="Maximum videos per account")
     parser.add_argument("--require-api-key", action="store_true", help="Exit non-zero when YOUTUBE_API_KEY is missing")
     args = parser.parse_args()
     if args.max_results < 1:
         raise SystemExit("--max-results must be at least 1")
-    raise SystemExit(collect(args))
+    try:
+        raise SystemExit(collect(args))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

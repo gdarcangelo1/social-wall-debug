@@ -114,6 +114,76 @@ def ensure_db(db_path):
     return Path(db_path)
 
 
+def parse_iso_date(value, label="date"):
+    """Parse a YYYY-MM-DD string into a date, returning None for empty values."""
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return datetime.strptime(str(value).strip(), "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError(f"{label} must be YYYY-MM-DD") from exc
+
+
+def _competition_where(competition_code=None):
+    where = ["date IS NOT NULL", "trim(date) != ''"]
+    values = []
+    if competition_code:
+        where.append("competition_code = ?")
+        values.append(str(competition_code))
+    return " AND ".join(where), values
+
+
+def get_competition_date_range(conn, competition_code=None):
+    """Return (min_date, max_date) from usable competition_matches.date rows."""
+    where_sql, values = _competition_where(competition_code)
+    try:
+        row = conn.execute(
+            f"""
+            SELECT MIN(substr(date, 1, 10)) AS date_from, MAX(substr(date, 1, 10)) AS date_to
+            FROM competition_matches
+            WHERE {where_sql}
+              AND length(substr(date, 1, 10)) = 10
+            """,
+            values,
+        ).fetchone()
+    except sqlite3.Error:
+        return None, None
+    if not row or not row["date_from"] or not row["date_to"]:
+        return None, None
+    try:
+        return (
+            parse_iso_date(row["date_from"], "competition date_from"),
+            parse_iso_date(row["date_to"], "competition date_to"),
+        )
+    except ValueError:
+        return None, None
+
+
+def resolve_effective_date_range(conn, date_from, date_to, competition_code=None):
+    """Resolve optional explicit dates against competition_matches min/max dates.
+
+    Returns (date_from, date_to, source), where source is explicit, competition_matches, or mixed.
+    """
+    explicit_from = parse_iso_date(date_from, "--date-from")
+    explicit_to = parse_iso_date(date_to, "--date-to")
+    comp_from = comp_to = None
+    if explicit_from is None or explicit_to is None:
+        comp_from, comp_to = get_competition_date_range(conn, competition_code)
+
+    effective_from = explicit_from or comp_from
+    effective_to = explicit_to or comp_to
+    if effective_from is None or effective_to is None:
+        raise ValueError("Missing date range and no competition match dates found. Provide --date-from and --date-to.")
+    if effective_to < effective_from:
+        raise ValueError("--date-to must be greater than or equal to --date-from")
+    if explicit_from is not None and explicit_to is not None:
+        source = "explicit"
+    elif explicit_from is None and explicit_to is None:
+        source = "competition_matches"
+    else:
+        source = "mixed"
+    return effective_from, effective_to, source
+
 def normalize_url(url):
     """Return a stable URL for matching, or None for empty input."""
     if url is None:

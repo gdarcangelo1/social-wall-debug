@@ -282,7 +282,7 @@
     .status-pill { background: #e2e8f0; color: #334155; }
     .status-pill.ok, .status-pill.published { background: var(--ok-bg); color: var(--ok); }
     .status-pill.error, .status-pill.invalid, .status-pill.failed { background: var(--danger-bg); color: var(--danger); }
-    .status-pill.candidate, .status-pill.pending, .status-pill.uncertain { background: var(--warning-bg); color: var(--warning); }
+    .status-pill.candidate, .status-pill.pending, .status-pill.uncertain, .status-pill.date_uncertain, .status-pill.date-out-of-range { background: var(--warning-bg); color: var(--warning); }
 
     .post-card, .match-card { display: grid; gap: 11px; }
 
@@ -713,7 +713,7 @@
         return pill;
       }
 
-      function renderSocieties(societies, accounts) {
+      function renderSocieties(societies, accounts, posts) {
         els.societiesList.replaceChildren();
         if (!societies.length) {
           appendText(els.societiesList, 'div', 'No societies found for the selected filters.', 'empty-state');
@@ -724,6 +724,11 @@
           const key = valueOf(account, 'id_societa') || valueOf(account, 'societa');
           if (!acc[key]) acc[key] = [];
           acc[key].push(account);
+          return acc;
+        }, {});
+        const postsBySocietyPlatform = posts.reduce((acc, post) => {
+          const key = (valueOf(post, 'id_societa') || valueOf(post, 'societa')) + '|' + lower(valueOf(post, 'platform'));
+          acc[key] = (acc[key] || 0) + 1;
           return acc;
         }, {});
 
@@ -767,7 +772,13 @@
           const societyAccounts = (accountsBySociety[key] || []).sort((a, b) => valueOf(a, 'platform').localeCompare(valueOf(b, 'platform')));
           societyAccounts.forEach(account => {
             const platform = lower(valueOf(account, 'platform')) || 'unknown';
-            appendLink(buttonRow, valueOf(account, 'account_url'), PLATFORM_LABELS[platform] || display(account.platform, 'Account'), 'account-button platform-' + platform);
+            const countKey = key + '|' + platform;
+            const postCount = postsBySocietyPlatform[countKey] || 0;
+            const label = (PLATFORM_LABELS[platform] || display(account.platform, 'Account')) + ' · ' + postCount + ' posts';
+            appendLink(buttonRow, valueOf(account, 'account_url'), label, 'account-button platform-' + platform);
+            if (postCount === 0) {
+              appendText(card, 'div', (PLATFORM_LABELS[platform] || display(account.platform, 'Account')) + ': account available, no posts collected.', 'muted');
+            }
           });
           if (buttonRow.children.length) {
             card.appendChild(buttonRow);
@@ -782,7 +793,6 @@
         const platform = lower(valueOf(post, 'platform'));
         const postId = valueOf(post, 'post_id');
         const embedHtml = valueOf(post, 'embed_html');
-        const screenshotPath = valueOf(post, 'screenshot_path');
         const thumbnailUrl = valueOf(post, 'thumbnail_url');
 
         if (platform === 'youtube' && postId) {
@@ -805,22 +815,24 @@
           return;
         }
 
-        const imageUrl = screenshotPath || thumbnailUrl;
-        if (imageUrl) {
+        if (thumbnailUrl) {
           const img = document.createElement('img');
           img.className = 'media-image';
-          img.src = imageUrl;
-          img.alt = display(post.title || post.text, 'Post media');
+          img.src = thumbnailUrl;
+          img.alt = display(post.title || post.text, 'Post thumbnail');
           img.loading = 'lazy';
           card.appendChild(img);
           return;
         }
 
-        appendText(card, 'div', 'Text-only fallback: no embeddable media, screenshot, or thumbnail is available.', 'muted');
+        appendText(card, 'div', 'Text-only fallback: no embeddable media or thumbnail is available.', 'muted');
       }
 
       function renderPosts(posts) {
         els.postsList.replaceChildren();
+        els.noPosts.textContent = state.posts.length === 0
+          ? 'No collected posts yet. Social account URLs are imported, but no collector has populated social_posts. Run collect_all.py or ingest_manual_posts.py.'
+          : 'No posts found for the selected filters.';
         els.noPosts.classList.toggle('hidden', posts.length !== 0);
         posts.forEach(post => {
           const card = document.createElement('article');
@@ -901,7 +913,7 @@
         els.visibleMatches.textContent = 'Visible matches: ' + matchingMatches.length;
         els.visibleSocieties.textContent = 'Visible societies: ' + matchingSocieties.length;
 
-        renderSocieties(matchingSocieties, matchingAccounts);
+        renderSocieties(matchingSocieties, matchingAccounts, state.posts);
         renderPosts(matchingPosts);
         renderMatches(matchingMatches);
       }
