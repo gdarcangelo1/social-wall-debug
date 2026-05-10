@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from db import connect_db, ensure_db, utc_now
+from db import connect_db, ensure_db, get_competition_date_range, utc_now
 
 DEFAULT_DB = "data/social_wall.db"
 DEFAULT_OUT = "data/posts.json"
@@ -261,6 +261,9 @@ def build_payload(db_path, filters):
         )
     )
 
+    with connect_db(db_path) as conn:
+        comp_from, comp_to = get_competition_date_range(conn, filters["competition_code"])
+
     summary = {
         "societies": len(societies),
         "accounts": len(accounts),
@@ -269,6 +272,12 @@ def build_payload(db_path, filters):
         "accounts_by_platform": count_by(accounts, "platform"),
         "posts_by_platform": count_by(posts, "platform"),
         "posts_by_status": count_by(posts, "status"),
+        "posts_by_society": count_by(posts, "societa"),
+        "competition_date_range": {
+            "date_from": comp_from.isoformat() if comp_from else None,
+            "date_to": comp_to.isoformat() if comp_to else None,
+            "competition_code": filters["competition_code"],
+        },
     }
     return {
         "generated_at": utc_now(),
@@ -299,6 +308,8 @@ def print_summary(payload, db_path, out_path):
     print(f"Accounts by platform: {json.dumps(summary['accounts_by_platform'], ensure_ascii=False, sort_keys=True)}")
     print(f"Posts by platform: {json.dumps(summary['posts_by_platform'], ensure_ascii=False, sort_keys=True)}")
     print(f"Posts by status: {json.dumps(summary['posts_by_status'], ensure_ascii=False, sort_keys=True)}")
+    print(f"Posts by society: {json.dumps(summary['posts_by_society'], ensure_ascii=False, sort_keys=True)}")
+    print(f"Competition date range: {json.dumps(summary['competition_date_range'], ensure_ascii=False, sort_keys=True)}")
 
 
 def main():

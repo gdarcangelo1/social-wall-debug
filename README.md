@@ -1,68 +1,39 @@
 # Social Wall Debug
 
-Independent debug repository for a static one-page social wall. The data layer stores sport society social accounts, collected or manually ingested public posts/videos from Facebook, Instagram and YouTube, and competition matches in a local SQLite database. The static frontend will read one exported JSON file from `data/posts.json`.
+Independent debug repository for a static one-page social wall. The project imports sport society social account URLs and competition matches into `data/social_wall.db`, collects or manually ingests lightweight public posts/videos, exports `data/posts.json`, and serves a plain `index.html` dashboard.
 
-## Data layer purpose
+## Full workflow
 
-The working data layer imports curated society account URLs and competition matches into `data/social_wall.db`, then exports a frontend-ready JSON payload.
-
-It creates and uses these SQLite tables:
-
-- `societies`
-- `social_accounts`
-- `social_posts`
-- `competition_matches`
-
-The frontend never queries SQLite directly. It reads only:
-
-```text
-data/posts.json
-```
-
-## Expected society CSV columns
-
-The account importer reads only these curated columns:
-
-- `id_societa`
-- `url`
-- `denominazione`
-- `SITOSOCIETÀ`
-- `FB`
-- `IG`
-- `YT`
-
-All later candidate, best, debug, Google and logo columns are ignored.
-
-Default input CSV:
-
-```text
-data/raw/societa/societa_cuore_04052026_con_social_rev_debug.csv
-```
-
-Default SQLite database:
-
-```text
-data/social_wall.db
-```
-
-Default exported JSON:
-
-```text
-data/posts.json
-```
-
-## Full static frontend data workflow
-
-Run from the repository root:
+Run all commands from the repository root. The collector date range is inferred from `competition_matches` when `--date-from` / `--date-to` are omitted.
 
 ```bash
-python3 scripts/import_accounts.py
-python3 scripts/import_competition.py --competition-code 59243
-python3 scripts/export_posts_json.py
+python3 scripts/import_accounts.py \
+  --csv data/raw/societa/societa_cuore_04052026_con_social_rev_debug.csv \
+  --db data/social_wall.db
+
+python3 scripts/import_aliases.py \
+  --db data/social_wall.db
+
+python3 scripts/import_competition.py \
+  --csv data/raw/campionati/59243_debug.csv \
+  --db data/social_wall.db \
+  --competition-code 59243
+
+python3 scripts/link_matches_to_societies.py \
+  --db data/social_wall.db
+
+python3 scripts/collect_all.py \
+  --db data/social_wall.db \
+  --out data/posts.json \
+  --platforms youtube,facebook,instagram \
+  --max-posts-per-account 20 \
+  --max-scrolls 5 \
+  --headful
+
 python3 -m http.server 8000
 ```
 
-Then open the static site at:
+Then open:
 
 ```text
 http://localhost:8000/index.html
@@ -70,9 +41,45 @@ http://localhost:8000/index.html
 
 Do not open `index.html` with `file://`; browsers may block the `fetch()` request for `data/posts.json`.
 
-## Import society accounts
+## Date range defaults
 
-Run from the repository root:
+Collectors and `collect_all.py` accept optional `--date-from YYYY-MM-DD`, `--date-to YYYY-MM-DD`, and `--competition-code CODE`.
+
+When one or both date boundaries are omitted:
+
+- missing `date_from` defaults to `MIN(date)` from usable `competition_matches.date` rows;
+- missing `date_to` defaults to `MAX(date)` from usable `competition_matches.date` rows;
+- `--competition-code` limits the inferred range to that competition.
+
+If there are no usable competition dates and no explicit full range, collectors stop with:
+
+```text
+Missing date range and no competition match dates found. Provide --date-from and --date-to.
+```
+
+Explicit override example:
+
+```bash
+python3 scripts/collect_all.py \
+  --db data/social_wall.db \
+  --out data/posts.json \
+  --date-from 2026-04-01 \
+  --date-to 2026-05-31 \
+  --platforms facebook,instagram
+```
+
+## Database tables
+
+The core tables are:
+
+- `societies`
+- `social_accounts`
+- `social_posts`
+- `competition_matches`
+
+`social_posts` stores lightweight useful fields only: society identifiers, platform/account/post URLs, `post_id`, `post_date`, title/text/author, YouTube thumbnails, simple embeds, collection method, status, and error message. Collectors do not save screenshots, full HTML dumps, page snapshots, or downloaded media files.
+
+## Import society accounts
 
 ```bash
 python3 scripts/import_accounts.py \
@@ -80,29 +87,15 @@ python3 scripts/import_accounts.py \
   --db data/social_wall.db
 ```
 
-The importer:
+The importer reads only the curated useful CSV columns (`id_societa`, `url`, `denominazione`, `SITOSOCIETÀ`, `FB`, `IG`, `YT`), stores malformed URLs with `status='invalid'`, and prints a final summary.
 
-- creates parent directories if needed;
-- creates or updates the database schema;
-- reads the CSV with `utf-8-sig` using `csv.DictReader`;
-- inserts/updates one row in `societies` for each CSV row;
-- imports non-empty `SITOSOCIETÀ`, `FB`, `IG` and `YT` cells into `social_accounts`;
-- preserves the original account URL;
-- stores a normalized URL for duplicate detection;
-- stores malformed URLs with `status='invalid'` instead of crashing;
-- prints a final summary.
-
-## Inspect imported account counts
-
-Run from the repository root after importing:
+Inspect imported account counts:
 
 ```bash
 sqlite3 data/social_wall.db "select platform, count(*) from social_accounts group by platform;"
 ```
 
 ## Import competition matches
-
-Run from the repository root:
 
 ```bash
 python3 scripts/import_competition.py \
@@ -111,51 +104,78 @@ python3 scripts/import_competition.py \
   --competition-code 59243
 ```
 
-The competition importer:
-
-- creates or updates the database schema;
-- reads the CSV with `utf-8-sig` using `csv.DictReader`;
-- maps FIPAV-style headers with case-insensitive normalized names;
-- stores each original CSV row in `competition_matches.raw_json`;
-- generates a stable synthetic match id from date, teams and row number when no match id column is available;
-- normalizes dates to `YYYY-MM-DD` where possible while preserving uncertain originals in `raw_json`;
-- stores malformed rows with status information instead of stopping the import;
-- prints a final summary.
-
-## Inspect imported competition counts
-
-Run from the repository root after importing:
+Inspect the available competition date range:
 
 ```bash
-sqlite3 data/social_wall.db "select competition_code, count(*) from competition_matches group by competition_code;"
+sqlite3 data/social_wall.db "select min(date), max(date), count(*) from competition_matches where nullif(trim(date),'') is not null;"
 ```
 
+## Collectors
+
+### Run all collectors
+
+```bash
+python3 scripts/collect_all.py \
+  --db data/social_wall.db \
+  --out data/posts.json \
+  --platforms youtube,facebook,instagram \
+  --max-posts-per-account 20 \
+  --max-scrolls 5 \
+  --headful
+```
+
+`collect_all.py` resolves the effective date range once, passes it to each selected collector, continues if one collector fails, and always runs the JSON exporter at the end.
+
+### YouTube
+
+The YouTube collector uses the YouTube Data API and `YOUTUBE_API_KEY` from the environment.
+
+```bash
+export YOUTUBE_API_KEY=...
+python3 scripts/collect_youtube.py \
+  --db data/social_wall.db \
+  --max-results 50
+```
+
+If the key is missing, the collector reports `api_key_missing` and exits 0 unless `--require-api-key` is supplied.
+
+### Facebook public
+
+The Facebook collector is a minimal best-effort Playwright collector. It scans visible public links only, detects login/block pages, and stores real post candidates (`/posts/`, `/permalink.php`, `/photos/`, `/videos/`, `/reel/`, `/share/p/`, `/watch/`) without screenshots or HTML dumps.
+
+```bash
+python3 scripts/collect_facebook_public.py \
+  --db data/social_wall.db \
+  --headful \
+  --max-scrolls 5 \
+  --max-posts-per-account 20
+```
+
+### Instagram public
+
+The Instagram collector is a minimal best-effort Playwright collector. It scans visible public `/p/`, `/reel/`, and `/tv/` links and stores real post candidates only.
+
+```bash
+python3 scripts/collect_instagram_public.py \
+  --db data/social_wall.db \
+  --headful \
+  --max-scrolls 5 \
+  --max-posts-per-account 20
+```
+
+Shared collector options:
+
+- `--date-from YYYY-MM-DD`
+- `--date-to YYYY-MM-DD`
+- `--competition-code CODE`
+- `--societa TEXT`
+- `--keep-out-of-range` for Facebook/Instagram only
+
+Default inserted statuses are `ok`, `candidate`, and `date_uncertain`. `date_out_of_range` rows are skipped unless `--keep-out-of-range` is passed.
 
 ## Manual post ingestion
 
-Manual ingestion is the always-available fallback for public Facebook, Instagram and YouTube posts. It does not require API keys.
-
-Create `data/raw/manual_posts.csv` with the supported columns. Minimal example:
-
-```csv
-societa,platform,post_url,post_date,title,text
-Migliarino Volley,facebook,https://www.facebook.com/...,2026-04-10,Match day,Post text
-```
-
-Supported columns are:
-
-- `societa`
-- `id_societa` optional
-- `platform` optional; inferred from `post_url` when missing
-- `account_url` optional
-- `post_url`
-- `post_date` optional
-- `title` optional
-- `text` optional
-- `thumbnail_url` optional
-- `screenshot_path` optional
-
-Run from the repository root:
+Manual ingestion is the always-available fallback and does not require API keys.
 
 ```bash
 python3 scripts/ingest_manual_posts.py \
@@ -163,59 +183,24 @@ python3 scripts/ingest_manual_posts.py \
   --db data/social_wall.db
 ```
 
-The ingester upserts by `platform + post_url`, normalizes dates where possible, stores `date_missing` or `date_invalid` statuses when needed, creates YouTube video ids and iframe HTML for common YouTube URL formats, creates simple Facebook embed iframe HTML, and leaves Instagram posts as normal link fallbacks.
+Minimal CSV example:
 
-## Collect YouTube videos
-
-The YouTube collector reads `social_accounts` rows where `platform='youtube'` and uses the YouTube Data API when `YOUTUBE_API_KEY` is available in the environment. Secrets must only be passed through the environment.
-
-Set the API key and collect videos for a date range:
-
-```bash
-export YOUTUBE_API_KEY=...
-
-python3 scripts/collect_youtube.py \
-  --db data/social_wall.db \
-  --date-from 2026-04-01 \
-  --date-to 2026-04-30
-```
-
-Optional flags:
-
-- `--societa TEXT` filters accounts by case-insensitive society substring.
-- `--max-results 50` limits videos per account.
-- `--require-api-key` exits non-zero if `YOUTUBE_API_KEY` is missing. Without this flag, a missing key is reported clearly and the script exits normally.
-
-After either manual ingestion or YouTube collection, refresh the frontend JSON:
-
-```bash
-python3 scripts/export_posts_json.py \
-  --db data/social_wall.db \
-  --out data/posts.json
+```csv
+societa,platform,post_url,post_date,title,text
+Migliarino Volley,facebook,https://www.facebook.com/...,2026-04-10,Match day,Post text
 ```
 
 ## Export frontend JSON
 
-Run from the repository root:
-
 ```bash
 python3 scripts/export_posts_json.py \
   --db data/social_wall.db \
   --out data/posts.json
 ```
 
-The exporter:
+The exporter writes `generated_at`, `summary`, `societies`, `accounts`, `posts`, and `matches`. The summary includes account counts by platform, post counts by platform/status/society, and the available competition date range.
 
-- creates or updates the database schema if the database is empty or missing;
-- reads `societies`, `social_accounts`, `social_posts` and `competition_matches`;
-- writes one JSON object with `generated_at`, `summary`, `societies`, `accounts`, `posts` and `matches`;
-- creates the parent output directory if needed;
-- orders posts by `post_date` descending with unknown dates last;
-- orders matches by `date` ascending with unknown dates last;
-- supports optional filters for dates, society substring, platform, status and competition code;
-- prints a final summary.
-
-Optional filter examples:
+Optional filters:
 
 ```bash
 python3 scripts/export_posts_json.py --platform youtube --status ok
@@ -223,26 +208,15 @@ python3 scripts/export_posts_json.py --date-from 2026-01-01 --date-to 2026-12-31
 python3 scripts/export_posts_json.py --societa "Volley" --competition-code 59243
 ```
 
-The exported structure is:
+## Static frontend
 
-```json
-{
-  "generated_at": "...",
-  "summary": {
-    "societies": 0,
-    "accounts": 0,
-    "posts": 0,
-    "matches": 0,
-    "accounts_by_platform": {},
-    "posts_by_platform": {},
-    "posts_by_status": {}
-  },
-  "societies": [],
-  "accounts": [],
-  "posts": [],
-  "matches": []
-}
+Serve the repository root:
+
+```bash
+python3 -m http.server 8000
 ```
+
+The page loads `data/posts.json`, provides society/platform/status/date/search filters, renders YouTube iframes and simple stored embeds, shows original post links, displays account links and collected post counts in society cards, and shows debug counters. It does not require screenshots and will not show broken screenshot placeholders.
 
 ## Utility commands
 
@@ -260,4 +234,7 @@ python3 scripts/import_competition.py --help
 python3 scripts/export_posts_json.py --help
 python3 scripts/ingest_manual_posts.py --help
 python3 scripts/collect_youtube.py --help
+python3 scripts/collect_facebook_public.py --help
+python3 scripts/collect_instagram_public.py --help
+python3 scripts/collect_all.py --help
 ```
