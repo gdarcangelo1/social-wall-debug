@@ -6,3 +6,4 @@ data/posts.json
 data/screenshots/
 data/media/
 data/logs/
+data/raw/*.csv
