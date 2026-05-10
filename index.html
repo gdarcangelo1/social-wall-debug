@@ -513,11 +513,29 @@
         return Number.isNaN(parsed) ? null : parsed;
       }
 
+      function discoveryRankValue(post) {
+        const rank = Number(valueOf(post, 'discovery_rank'));
+        return Number.isFinite(rank) && rank > 0 ? rank : Number.POSITIVE_INFINITY;
+      }
+
+      function isFacebookUndatedCandidate(post) {
+        return lower(valueOf(post, 'platform')) === 'facebook'
+          && !normalizedDate(post.post_date)
+          && lower(valueOf(post, 'status')) === 'candidate';
+      }
+
       function sortPostsByDate(posts) {
         return posts.slice().sort((a, b) => {
           const aTime = dateOrdinal(a.post_date);
           const bTime = dateOrdinal(b.post_date);
           if (aTime === null && bTime === null) {
+            const aFacebookCandidate = isFacebookUndatedCandidate(a);
+            const bFacebookCandidate = isFacebookUndatedCandidate(b);
+            if (aFacebookCandidate && bFacebookCandidate) {
+              const rankDiff = discoveryRankValue(a) - discoveryRankValue(b);
+              if (rankDiff !== 0) return rankDiff;
+            }
+            if (aFacebookCandidate !== bFacebookCandidate) return aFacebookCandidate ? -1 : 1;
             return valueOf(a, 'post_url').localeCompare(valueOf(b, 'post_url'));
           }
           if (aTime === null) return 1;

@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import importlib.util
 import re
+import uuid
 from urllib.parse import parse_qs, urlsplit
 
 from collector_utils import (
@@ -24,20 +25,39 @@ from collector_utils import (
 )
 from db import ensure_db, upsert_social_post
 
-POST_PATTERNS = ("/posts/", "/photos/", "/videos/", "/reel/", "/watch/", "/watch?", "/share/p/", "/permalink.php")
+POST_PATTERNS = ("/posts/", "/photos/", "/videos/", "/reel/", "/share/p/", "/permalink.php")
 LOGIN_RE = re.compile(r"log in|login|create new account|accedi|iscriviti", re.I)
 BLOCK_RE = re.compile(r"temporarily blocked|try again later|ti abbiamo bloccato temporaneamente|riprova più tardi", re.I)
 
 
-def is_facebook_post_url(url):
+def classify_facebook_url(url):
     parts = urlsplit(url)
     host = parts.netloc.lower()
+    path = parts.path.lower()
+    query = parse_qs(parts.query)
     if "facebook.com" not in host and "fb.watch" not in host:
-        return False
-    path = parts.path
-    if "/permalink.php" in path and "story_fbid=" in parts.query:
-        return True
-    return any(pattern in path for pattern in POST_PATTERNS)
+        return "unknown"
+    if "fb.watch" in host and path.strip("/"):
+        return "video"
+    if "/permalink.php" in path and query.get("story_fbid"):
+        return "normal_post"
+    if "/posts/" in path:
+        return "normal_post"
+    if "/photos/" in path:
+        return "photo"
+    if "/videos/" in path:
+        return "video"
+    if path.rstrip("/") == "/watch" and query.get("v"):
+        return "video"
+    if "/reel/" in path:
+        return "reel"
+    if "/share/p/" in path:
+        return "share"
+    return "unknown"
+
+
+def is_facebook_post_url(url):
+    return classify_facebook_url(url) != "unknown"
 
 
 def merge_detail(link_title, link_text, link_date, link_confident, detail):
@@ -61,7 +81,7 @@ async def first_meta_content(page, selectors):
     return None
 
 
-async def extract_facebook_detail(detail_page, post_url):
+async def extract_facebook_detail(detail_page, post_url, date_from=None, date_to=None, resolve_relative=False):
     detail = {"post_date": None, "confident": False, "text": None, "title": None, "author": None, "error_message": None}
     try:
         await detail_page.goto(post_url, wait_until="domcontentloaded", timeout=45000)
@@ -114,12 +134,12 @@ async def extract_facebook_detail(detail_page, post_url):
                     value = await nodes.nth(idx).get_attribute(attr, timeout=800)
                 except Exception:
                     value = None
-                post_date, confident = parse_visible_date(value)
+                post_date, confident = parse_visible_date(value, date_from, date_to, resolve_relative)
                 if post_date:
                     detail.update({"post_date": post_date, "confident": confident})
                     return detail, None
         meta_date = await first_meta_content(detail_page, ["meta[property='article:published_time']"])
-        post_date, confident = parse_visible_date(meta_date)
+        post_date, confident = parse_visible_date(meta_date, date_from, date_to, resolve_relative)
         if post_date:
             detail.update({"post_date": post_date, "confident": confident})
             return detail, None
@@ -134,7 +154,7 @@ async def extract_facebook_detail(detail_page, post_url):
                 value = await links.nth(idx).inner_text(timeout=600)
             except Exception:
                 value = None
-            post_date, confident = parse_visible_date(value)
+            post_date, confident = parse_visible_date(value, date_from, date_to, resolve_relative)
             if post_date:
                 detail.update({"post_date": post_date, "confident": confident})
                 return detail, None
@@ -159,7 +179,7 @@ def facebook_post_id(url):
     return segments[-1] if segments else None
 
 
-FACEBOOK_KEEP_QUERY_KEYS = {"story_fbid", "fbid", "v", "id"}
+FACEBOOK_KEEP_QUERY_KEYS = {"story_fbid", "fbid", "v", "id", "set", "type"}
 # Facebook feed units are not uniform: normal posts, photos, and videos often
 # share the same article/feed-unit wrapper, while the date usually lives in the
 # card header rather than next to the photo/video permalink itself.  Keep the
@@ -171,8 +191,9 @@ FACEBOOK_POST_LINK_SELECTORS = (
     'a[href*="/share/p/"]',
     'a[href*="/photos/"]',
     'a[href*="/videos/"]',
-    'a[href*="/watch/"]',
-    'a[href*="/watch?"]',
+    'a[href*="/watch?v="]',
+    'a[href*="/watch/?v="]',
+    'a[href*="fb.watch"]',
     'a[href*="/reel/"]',
 )
 FACEBOOK_POST_LINK_SELECTOR = ", ".join(FACEBOOK_POST_LINK_SELECTORS)
@@ -189,7 +210,7 @@ FACEBOOK_LINK_CARD_XPATHS = (
     'xpath=ancestor-or-self::div[contains(@data-pagelet, "FeedUnit")][1]',
     'xpath=ancestor::div[.//a][1]',
 )
-PREFERRED_POST_MARKERS = ("/posts/", "/permalink.php", "/share/p/", "/videos/", "/watch/", "/watch?", "/reel/", "/photos/")
+PREFERRED_POST_MARKERS = ("/posts/", "/permalink.php", "/share/p/", "/videos/", "/watch", "/reel/", "/photos/")
 DATE_TEXT_RE = re.compile(
     r"\b(20\d{2}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]20\d{2}|"
     r"\d{1,2}\s+(?:gen|feb|mar|apr|mag|giu|lug|ago|set|sett|ott|nov|dic|gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)|"
@@ -204,9 +225,16 @@ def canonicalize_facebook_post_url(url):
 
 
 def post_url_score(url):
-    path = urlsplit(url).path
+    parts = urlsplit(url)
+    if "fb.watch" in parts.netloc.lower() and parts.path.strip("/"):
+        return PREFERRED_POST_MARKERS.index("/videos/")
+    path = parts.path
+    query = parse_qs(parts.query)
     for index, marker in enumerate(PREFERRED_POST_MARKERS):
-        if marker in path:
+        if marker == "/watch":
+            if path.rstrip("/") == "/watch" and query.get("v"):
+                return index
+        elif marker in path:
             return index
     return len(PREFERRED_POST_MARKERS)
 
@@ -214,7 +242,18 @@ def post_url_score(url):
 def choose_post_url(urls):
     if not urls:
         return None
-    return sorted(set(urls), key=lambda value: (post_url_score(value), len(value)))[0]
+    best_url = None
+    best_key = None
+    first_indexes = {}
+    for index, url in enumerate(urls):
+        if url in first_indexes:
+            continue
+        first_indexes[url] = index
+        key = (post_url_score(url), index, len(url))
+        if best_key is None or key < best_key:
+            best_url = url
+            best_key = key
+    return best_url
 
 
 async def date_from_card(card, date_from, date_to, resolve_relative):
@@ -318,6 +357,8 @@ async def scan_facebook_card(card, account_url, args, date_from, date_to, seen, 
             summary["visible_dates_extracted"] += 1
     post_url = card_data["post_url"]
     if post_url not in seen:
+        card_data["discovery_rank"] = len(seen) + 1
+        card_data["item_type"] = classify_facebook_url(post_url)
         seen[post_url] = card_data
     return True
 
@@ -401,7 +442,7 @@ async def scan_account(browser, account, args, date_from, date_to, summary):
 
                 if args.open_detail_for_missing_date and not post_date and detail_page is not None:
                     summary["detail_pages_opened"] += 1
-                    detail, failure = await extract_facebook_detail(detail_page, post_url)
+                    detail, failure = await extract_facebook_detail(detail_page, post_url, date_from, date_to, args.resolve_relative_dates)
                     if failure == "login":
                         summary["login_required"] += 1
                         summary["login_block_failures"] += 1
@@ -448,6 +489,9 @@ async def scan_account(browser, account, args, date_from, date_to, summary):
                     author=author,
                     embed_html=facebook_embed(post_url),
                     collection_method="playwright_visible_card",
+                    discovery_rank=card_data.get("discovery_rank"),
+                    collection_run_id=args.collection_run_id,
+                    item_type=card_data.get("item_type") or classify_facebook_url(post_url),
                     status=status,
                     error_message=error_message if status != "ok" else None,
                 )
@@ -465,6 +509,7 @@ async def scan_account(browser, account, args, date_from, date_to, summary):
 
 async def collect_async(args):
     ensure_db(args.db)
+    args.collection_run_id = f"facebook-{uuid.uuid4()}"
     date_from, date_to, _source = resolve_range_for_args(args)
     accounts = filtered_accounts(args.db, "facebook", args.societa)
     summary = {

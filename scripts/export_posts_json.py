@@ -39,6 +39,9 @@ POST_FIELDS = (
     "screenshot_path",
     "embed_html",
     "collection_method",
+    "discovery_rank",
+    "collection_run_id",
+    "item_type",
     "status",
     "error_message",
 )
