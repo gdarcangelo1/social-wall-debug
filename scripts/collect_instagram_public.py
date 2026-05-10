@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from collector_utils import (
     absolute_url,
+    clean_card_text,
     click_cookie_buttons,
     filtered_accounts,
     in_date_range,
@@ -17,6 +18,8 @@ from collector_utils import (
     parse_visible_date,
     resolve_range_for_args,
     short_text,
+    first_useful_line,
+    canonicalize_url_without_query_noise,
     should_insert_status,
 )
 from db import ensure_db, upsert_social_post
@@ -143,36 +146,112 @@ async def extract_instagram_detail(detail_page, post_url):
         return detail, "failed"
 
 
-async def link_context(link):
-    href = await link.get_attribute("href")
-    text = None
-    title = None
-    post_date = None
-    confident = False
-    for xpath in ("ancestor::article[1]", "ancestor::div[1]", "ancestor::div[2]", "ancestor::div[3]"):
+INSTAGRAM_CARD_SELECTORS = (
+    "article",
+    'div[role="main"] article',
+    'div:has(a[href*="/p/"])',
+    'div:has(a[href*="/reel/"])',
+    'div:has(a[href*="/tv/"])',
+)
+INSTAGRAM_DATE_TEXT_RE = re.compile(
+    r"\b(20\d{2}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]20\d{2}|"
+    r"\d{1,2}\s+(?:gen|feb|mar|apr|mag|giu|lug|ago|set|sett|ott|nov|dic|gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)|"
+    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\s+\d{1,2}|"
+    r"ieri|oggi|yesterday|today|\d+\s*(?:h|d|giorni?|ore?|settimane?|weeks?|days?)(?:\s+fa|\s+ago)?)\b",
+    re.I,
+)
+
+
+def canonicalize_instagram_post_url(url):
+    return canonicalize_url_without_query_noise(url)
+
+
+async def date_from_instagram_card(card, date_from, date_to, resolve_relative):
+    uncertain = (None, False)
+    probes = (("time[datetime]", "datetime"), ("a[aria-label]", "aria-label"), ("span[aria-label]", "aria-label"), ("[aria-label]", "aria-label"))
+    for selector, attr in probes:
         try:
-            container = link.locator(f"xpath={xpath}").first
-            if await container.count():
-                text = short_text(await container.inner_text(timeout=1200))
-                time_loc = container.locator("time, a[aria-label]")
-                count = min(await time_loc.count(), 6)
-                for idx in range(count):
-                    node = time_loc.nth(idx)
-                    for attr in ("datetime", "title", "aria-label"):
-                        value = await node.get_attribute(attr)
-                        post_date, confident = parse_visible_date(value)
-                        if post_date:
-                            break
-                    if not post_date:
-                        post_date, confident = parse_visible_date(await node.inner_text(timeout=500))
-                    if post_date:
-                        break
-                break
+            nodes = card.locator(selector)
+            count = min(await nodes.count(), 40)
         except Exception:
+            count = 0
+        for idx in range(count):
+            try:
+                value = await nodes.nth(idx).get_attribute(attr, timeout=500)
+            except Exception:
+                value = None
+            post_date, confident = parse_visible_date(value, date_from, date_to, resolve_relative)
+            if post_date and confident:
+                return post_date, True
+            if post_date and not uncertain[0]:
+                uncertain = (post_date, False)
+
+    try:
+        text = await card.inner_text(timeout=1200)
+    except Exception:
+        text = ""
+    for line in [line.strip() for line in text.splitlines() if line.strip()][:80]:
+        if not INSTAGRAM_DATE_TEXT_RE.search(line):
             continue
-    if text:
-        title = text[:90]
-    return href, title, text, post_date, confident
+        post_date, confident = parse_visible_date(line, date_from, date_to, resolve_relative)
+        if post_date and confident:
+            return post_date, True
+        if post_date and not uncertain[0]:
+            uncertain = (post_date, False)
+    return uncertain
+
+
+async def extract_instagram_card(card, account_url, date_from, date_to, resolve_relative):
+    try:
+        text_raw = await card.inner_text(timeout=1200)
+    except Exception:
+        text_raw = ""
+    text = clean_card_text(text_raw, 2000)
+    title = first_useful_line(text_raw, 120)
+    post_urls = []
+    try:
+        links = card.locator("a[href]")
+        link_count = min(await links.count(), 80)
+    except Exception:
+        link_count = 0
+    for idx in range(link_count):
+        try:
+            href = await links.nth(idx).get_attribute("href", timeout=500)
+        except Exception:
+            href = None
+        post_url = absolute_url(account_url, href)
+        if post_url and is_instagram_post_url(post_url):
+            post_urls.append(canonicalize_instagram_post_url(post_url))
+    if not post_urls:
+        return None
+    post_url = sorted(set(post_urls), key=len)[0]
+    post_date, confident = await date_from_instagram_card(card, date_from, date_to, resolve_relative)
+    return {"post_url": post_url, "title": title, "text": text, "post_date": post_date, "confident": confident}
+
+
+async def scan_visible_instagram_cards(page, account_url, args, date_from, date_to, seen, summary):
+    for selector in INSTAGRAM_CARD_SELECTORS:
+        try:
+            cards = page.locator(selector)
+            count = min(await cards.count(), 100)
+        except Exception:
+            count = 0
+        for idx in range(count):
+            summary["cards_scanned"] += 1
+            card_data = await extract_instagram_card(cards.nth(idx), account_url, date_from, date_to, args.resolve_relative_dates)
+            if not card_data:
+                continue
+            summary["cards_with_post_url"] += 1
+            if card_data["post_date"]:
+                summary["cards_with_date"] += 1
+                if card_data["confident"]:
+                    summary["cards_with_confident_date"] += 1
+                    summary["visible_dates_extracted"] += 1
+            post_url = card_data["post_url"]
+            if post_url not in seen:
+                seen[post_url] = card_data
+            if len(seen) >= args.max_posts_per_account:
+                return
 
 
 async def scan_account(browser, account, args, date_from, date_to, summary):
@@ -191,20 +270,8 @@ async def scan_account(browser, account, args, date_from, date_to, summary):
             print(f"login_required: {account.get('societa')} ({account_url})")
             return
         seen = {}
-        for scroll_no in range(max(1, args.max_scrolls)):
-            links = page.locator("a[href]")
-            count = await links.count()
-            for idx in range(count):
-                link = links.nth(idx)
-                href, title, text, post_date, confident = await link_context(link)
-                post_url = absolute_url(account_url, href)
-                if not post_url or not is_instagram_post_url(post_url):
-                    continue
-                if post_url in seen:
-                    continue
-                seen[post_url] = (title, text, post_date, confident)
-                if len(seen) >= args.max_posts_per_account:
-                    break
+        for _scroll_no in range(max(1, args.max_scrolls)):
+            await scan_visible_instagram_cards(page, account_url, args, date_from, date_to, seen, summary)
             if len(seen) >= args.max_posts_per_account:
                 break
             await page.mouse.wheel(0, 1800)
@@ -213,33 +280,45 @@ async def scan_account(browser, account, args, date_from, date_to, summary):
             summary["no_public_posts_found"] += 1
             print(f"no_public_posts_found: {account.get('societa')} ({account_url})")
             return
-        detail_page = await browser.new_page(viewport={"width": 1365, "height": 900})
+
+        detail_page = None
+        if args.open_detail_for_missing_date:
+            detail_page = await browser.new_page(viewport={"width": 1365, "height": 900})
         try:
-            for post_url, (title, text, post_date, confident) in seen.items():
+            for post_url, card_data in seen.items():
                 summary["candidate_urls_found"] += 1
-                summary["detail_pages_opened"] += 1
-                detail, failure = await extract_instagram_detail(detail_page, post_url)
-                if failure == "login":
-                    summary["login_required"] += 1
-                    summary["login_block_failures"] += 1
-                elif failure == "blocked":
-                    summary["temporarily_blocked"] += 1
-                    summary["login_block_failures"] += 1
-                elif failure == "failed":
-                    summary["failed"] += 1
-                title, text, post_date, confident, author, error_message = merge_detail(
-                    title, text, post_date, confident, detail
-                )
+                title = card_data.get("title")
+                text = card_data.get("text")
+                post_date = card_data.get("post_date")
+                confident = card_data.get("confident", False)
+                author = None
+                error_message = None
+
+                if args.open_detail_for_missing_date and not post_date and detail_page is not None:
+                    summary["detail_pages_opened"] += 1
+                    detail, failure = await extract_instagram_detail(detail_page, post_url)
+                    if failure == "login":
+                        summary["login_required"] += 1
+                        summary["login_block_failures"] += 1
+                    elif failure == "blocked":
+                        summary["temporarily_blocked"] += 1
+                        summary["login_block_failures"] += 1
+                    elif failure == "failed":
+                        summary["failed"] += 1
+                    title, text, post_date, confident, author, error_message = merge_detail(
+                        title, text, post_date, confident, detail
+                    )
+
                 if post_date:
                     summary["dates_extracted"] += 1
+                else:
+                    summary["candidates_without_date"] += 1
                 range_state = in_date_range(post_date, date_from, date_to)
                 if post_date and confident and range_state is True:
                     status = "ok"
                 elif post_date and range_state is False:
                     status = "date_out_of_range"
                 elif post_date:
-                    status = "date_uncertain"
-                elif title or text or author or error_message:
                     status = "date_uncertain"
                 else:
                     status = "candidate"
@@ -262,14 +341,15 @@ async def scan_account(browser, account, args, date_from, date_to, summary):
                     title=title,
                     text=text,
                     author=author,
-                    collection_method="playwright",
+                    collection_method="playwright_visible_card",
                     status=status,
                     error_message=error_message if status != "ok" else None,
                 )
                 if result in {"inserted", "updated"}:
                     summary["inserted_updated"] += 1
         finally:
-            await detail_page.close()
+            if detail_page is not None:
+                await detail_page.close()
     except Exception as exc:
         summary["failed"] += 1
         print(f"failed: {account.get('societa')} ({account_url}): {exc}")
@@ -284,6 +364,12 @@ async def collect_async(args):
     summary = {
         "accounts_scanned": 0,
         "candidate_urls_found": 0,
+        "cards_scanned": 0,
+        "cards_with_post_url": 0,
+        "cards_with_date": 0,
+        "cards_with_confident_date": 0,
+        "visible_dates_extracted": 0,
+        "candidates_without_date": 0,
         "inserted_updated": 0,
         "detail_pages_opened": 0,
         "dates_extracted": 0,
@@ -302,9 +388,15 @@ async def collect_async(args):
         print("Instagram public collection summary")
         for label, key in (
             ("accounts scanned", "accounts_scanned"),
+            ("visible cards scanned", "cards_scanned"),
+            ("cards with post URL", "cards_with_post_url"),
+            ("cards with any printed date", "cards_with_date"),
+            ("cards with confident printed date", "cards_with_confident_date"),
             ("candidate URLs found", "candidate_urls_found"),
             ("detail pages opened", "detail_pages_opened"),
+            ("visible dates extracted", "visible_dates_extracted"),
             ("dates extracted", "dates_extracted"),
+            ("candidates without date", "candidates_without_date"),
             ("rows updated to ok", "rows_ok"),
             ("rows left date_uncertain/candidate", "left_uncertain_candidate"),
             ("inserted/updated rows", "inserted_updated"),
@@ -333,9 +425,15 @@ async def collect_async(args):
     print("Instagram public collection summary")
     for label, key in (
         ("accounts scanned", "accounts_scanned"),
+        ("visible cards scanned", "cards_scanned"),
+        ("cards with post URL", "cards_with_post_url"),
+        ("cards with any printed date", "cards_with_date"),
+        ("cards with confident printed date", "cards_with_confident_date"),
         ("candidate URLs found", "candidate_urls_found"),
         ("detail pages opened", "detail_pages_opened"),
+        ("visible dates extracted", "visible_dates_extracted"),
         ("dates extracted", "dates_extracted"),
+        ("candidates without date", "candidates_without_date"),
         ("rows updated to ok", "rows_ok"),
         ("rows left date_uncertain/candidate", "left_uncertain_candidate"),
         ("inserted/updated rows", "inserted_updated"),
@@ -362,6 +460,9 @@ def main():
     parser.add_argument("--max-posts-per-account", type=int, default=20, help="Maximum candidate post links per account")
     parser.add_argument("--sleep", type=float, default=1.5, help="Seconds to wait after each scroll")
     parser.add_argument("--keep-out-of-range", action="store_true", help="Store date_out_of_range candidates")
+    parser.add_argument("--verbose", action="store_true", help="Print additional diagnostics")
+    parser.add_argument("--resolve-relative-dates", action="store_true", help="Resolve relative timestamps such as 2 giorni fa or 3 d")
+    parser.add_argument("--open-detail-for-missing-date", action="store_true", help="Open post detail pages only for visible cards that have no date")
     args = parser.parse_args()
     if args.max_scrolls < 1 or args.max_posts_per_account < 1:
         raise SystemExit("--max-scrolls and --max-posts-per-account must be at least 1")
