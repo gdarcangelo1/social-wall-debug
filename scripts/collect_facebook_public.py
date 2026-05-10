@@ -24,7 +24,7 @@ from collector_utils import (
 )
 from db import ensure_db, upsert_social_post
 
-POST_PATTERNS = ("/posts/", "/photos/", "/videos/", "/reel/", "/watch/", "/share/p/", "/permalink.php")
+POST_PATTERNS = ("/posts/", "/photos/", "/videos/", "/reel/", "/watch/", "/watch?", "/share/p/", "/permalink.php")
 LOGIN_RE = re.compile(r"log in|login|create new account|accedi|iscriviti", re.I)
 BLOCK_RE = re.compile(r"temporarily blocked|try again later|ti abbiamo bloccato temporaneamente|riprova più tardi", re.I)
 
@@ -160,14 +160,36 @@ def facebook_post_id(url):
 
 
 FACEBOOK_KEEP_QUERY_KEYS = {"story_fbid", "fbid", "v", "id"}
+# Facebook feed units are not uniform: normal posts, photos, and videos often
+# share the same article/feed-unit wrapper, while the date usually lives in the
+# card header rather than next to the photo/video permalink itself.  Keep the
+# selectors broad enough to extract the URL and date from the same enclosing
+# card.
+FACEBOOK_POST_LINK_SELECTORS = (
+    'a[href*="/posts/"]',
+    'a[href*="/permalink.php"]',
+    'a[href*="/share/p/"]',
+    'a[href*="/photos/"]',
+    'a[href*="/videos/"]',
+    'a[href*="/watch/"]',
+    'a[href*="/watch?"]',
+    'a[href*="/reel/"]',
+)
+FACEBOOK_POST_LINK_SELECTOR = ", ".join(FACEBOOK_POST_LINK_SELECTORS)
 FACEBOOK_CARD_SELECTORS = (
     'div[role="article"]',
     "article",
     'div[data-pagelet*="FeedUnit"]',
     'div[data-ad-preview="message"]',
-    'div:has(a[href*="/posts/"]), div:has(a[href*="/permalink.php"]), div:has(a[href*="/share/p/"]), div:has(a[href*="/videos/"]), div:has(a[href*="/reel/"]), div:has(a[href*="/photos/"])',
+    f'div:has({FACEBOOK_POST_LINK_SELECTOR})',
 )
-PREFERRED_POST_MARKERS = ("/posts/", "/permalink.php", "/share/p/", "/videos/", "/reel/", "/photos/")
+FACEBOOK_LINK_CARD_XPATHS = (
+    'xpath=ancestor-or-self::div[@role="article"][1]',
+    'xpath=ancestor-or-self::article[1]',
+    'xpath=ancestor-or-self::div[contains(@data-pagelet, "FeedUnit")][1]',
+    'xpath=ancestor::div[.//a][1]',
+)
+PREFERRED_POST_MARKERS = ("/posts/", "/permalink.php", "/share/p/", "/videos/", "/watch/", "/watch?", "/reel/", "/photos/")
 DATE_TEXT_RE = re.compile(
     r"\b(20\d{2}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]20\d{2}|"
     r"\d{1,2}\s+(?:gen|feb|mar|apr|mag|giu|lug|ago|set|sett|ott|nov|dic|gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)|"
@@ -283,6 +305,44 @@ async def extract_facebook_card(card, account_url, date_from, date_to, resolve_r
     return {"post_url": post_url, "title": title, "text": text, "post_date": post_date, "confident": confident}
 
 
+async def scan_facebook_card(card, account_url, args, date_from, date_to, seen, summary):
+    summary["cards_scanned"] += 1
+    card_data = await extract_facebook_card(card, account_url, date_from, date_to, args.resolve_relative_dates)
+    if not card_data:
+        return False
+    summary["cards_with_post_url"] += 1
+    if card_data["post_date"]:
+        summary["cards_with_date"] += 1
+        if card_data["confident"]:
+            summary["cards_with_confident_date"] += 1
+            summary["visible_dates_extracted"] += 1
+    post_url = card_data["post_url"]
+    if post_url not in seen:
+        seen[post_url] = card_data
+    return True
+
+
+async def scan_cards_from_post_links(page, account_url, args, date_from, date_to, seen, summary):
+    try:
+        links = page.locator(FACEBOOK_POST_LINK_SELECTOR)
+        count = min(await links.count(), 120)
+    except Exception:
+        count = 0
+    for idx in range(count):
+        link = links.nth(idx)
+        for xpath in FACEBOOK_LINK_CARD_XPATHS:
+            try:
+                card = link.locator(xpath).first
+                if not await card.count():
+                    continue
+            except Exception:
+                continue
+            if await scan_facebook_card(card, account_url, args, date_from, date_to, seen, summary):
+                break
+        if len(seen) >= args.max_posts_per_account:
+            return
+
+
 async def scan_visible_facebook_cards(page, account_url, args, date_from, date_to, seen, summary):
     for selector in FACEBOOK_CARD_SELECTORS:
         try:
@@ -291,21 +351,10 @@ async def scan_visible_facebook_cards(page, account_url, args, date_from, date_t
         except Exception:
             count = 0
         for idx in range(count):
-            summary["cards_scanned"] += 1
-            card_data = await extract_facebook_card(cards.nth(idx), account_url, date_from, date_to, args.resolve_relative_dates)
-            if not card_data:
-                continue
-            summary["cards_with_post_url"] += 1
-            if card_data["post_date"]:
-                summary["cards_with_date"] += 1
-                if card_data["confident"]:
-                    summary["cards_with_confident_date"] += 1
-                    summary["visible_dates_extracted"] += 1
-            post_url = card_data["post_url"]
-            if post_url not in seen:
-                seen[post_url] = card_data
+            await scan_facebook_card(cards.nth(idx), account_url, args, date_from, date_to, seen, summary)
             if len(seen) >= args.max_posts_per_account:
                 return
+    await scan_cards_from_post_links(page, account_url, args, date_from, date_to, seen, summary)
 
 
 async def scan_account(browser, account, args, date_from, date_to, summary):
@@ -319,7 +368,7 @@ async def scan_account(browser, account, args, date_from, date_to, summary):
             summary["temporarily_blocked"] += 1
             print(f"temporarily_blocked: {account.get('societa')} ({account_url})")
             return
-        if LOGIN_RE.search(body_text) and not await page.locator("a[href*='/posts/'], a[href*='/permalink.php'], a[href*='/reel/']").count():
+        if LOGIN_RE.search(body_text) and not await page.locator(FACEBOOK_POST_LINK_SELECTOR).count():
             summary["login_required"] += 1
             print(f"login_required: {account.get('societa')} ({account_url})")
             return
