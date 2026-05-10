@@ -65,10 +65,10 @@ python3 -m http.server 8000
 Then open the static site at:
 
 ```text
-http://localhost:8000/
+http://localhost:8000/index.html
 ```
 
-`index.html` is not implemented yet, but this workflow prepares the JSON file it will load.
+Do not open `index.html` with `file://`; browsers may block the `fetch()` request for `data/posts.json`.
 
 ## Import society accounts
 
