@@ -1,0 +1,971 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Social Wall Debug</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --text: #1e293b;
+      --muted: #64748b;
+      --line: #dbe3ef;
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --danger: #b91c1c;
+      --danger-bg: #fee2e2;
+      --ok: #047857;
+      --ok-bg: #d1fae5;
+      --warning: #a16207;
+      --warning-bg: #fef3c7;
+      --facebook: #1877f2;
+      --instagram: #c13584;
+      --youtube: #ff0000;
+      --website: #475569;
+      color-scheme: light;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    a { color: var(--primary); }
+    a:hover { color: var(--primary-dark); }
+
+    .page {
+      width: min(1440px, 100%);
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .hero {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 3.5rem);
+      letter-spacing: -0.04em;
+    }
+
+    .hero p {
+      margin: 0;
+      color: var(--muted);
+      max-width: 78ch;
+    }
+
+    .notice {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      padding: 16px;
+      margin: 16px 0;
+    }
+
+    .notice.error {
+      border-color: #fecaca;
+      background: var(--danger-bg);
+      color: var(--danger);
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin: 18px 0;
+    }
+
+    .metric {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px;
+      min-height: 96px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+
+    .metric .label {
+      display: block;
+      color: var(--muted);
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .metric .value {
+      display: block;
+      margin-top: 8px;
+      font-size: 1.9rem;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+
+    .metric .small-value {
+      display: block;
+      margin-top: 8px;
+      font-size: 0.95rem;
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }
+
+    .filters {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background: rgba(245, 247, 251, 0.94);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      margin: 20px 0;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+    }
+
+    .filters h2, .section h2 {
+      margin: 0 0 12px;
+      font-size: 1.25rem;
+    }
+
+    .filter-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      align-items: end;
+    }
+
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 700;
+    }
+
+    input, select, button {
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      color: var(--text);
+      padding: 9px 11px;
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+      border-color: var(--primary);
+      background: var(--primary);
+      color: #fff;
+      font-weight: 800;
+    }
+
+    button:hover { background: var(--primary-dark); }
+
+    .debug-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .debug-pill, .badge, .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 0.78rem;
+      font-weight: 800;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .debug-pill { background: #e2e8f0; color: #334155; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(260px, 0.85fr) minmax(340px, 1.35fr) minmax(280px, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .section {
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      overflow: hidden;
+    }
+
+    .society-card {
+      display: grid;
+      gap: 12px;
+    }
+
+    .society-head {
+      display: grid;
+      grid-template-columns: 54px 1fr;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .logo {
+      width: 54px;
+      height: 54px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      object-fit: cover;
+      background: #f8fafc;
+    }
+
+    .logo-placeholder {
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-weight: 900;
+    }
+
+    .card h3 {
+      margin: 0;
+      font-size: 1rem;
+      line-height: 1.25;
+    }
+
+    .meta, .muted {
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    .button-row, .link-row, .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .account-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 7px 10px;
+      color: #fff;
+      font-size: 0.78rem;
+      font-weight: 900;
+      text-decoration: none;
+    }
+
+    .platform-website, .badge.website { background: var(--website); }
+    .platform-facebook, .badge.facebook { background: var(--facebook); }
+    .platform-instagram, .badge.instagram { background: var(--instagram); }
+    .platform-youtube, .badge.youtube { background: var(--youtube); }
+    .badge.unknown { background: #64748b; color: #fff; }
+
+    .status-pill { background: #e2e8f0; color: #334155; }
+    .status-pill.ok, .status-pill.published { background: var(--ok-bg); color: var(--ok); }
+    .status-pill.error, .status-pill.invalid, .status-pill.failed { background: var(--danger-bg); color: var(--danger); }
+    .status-pill.candidate, .status-pill.pending, .status-pill.uncertain { background: var(--warning-bg); color: var(--warning); }
+
+    .post-card, .match-card { display: grid; gap: 11px; }
+
+    .post-title {
+      font-size: 1.08rem;
+      font-weight: 850;
+    }
+
+    .post-text {
+      margin: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .media-frame {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      border: 0;
+      border-radius: 14px;
+      background: #0f172a;
+    }
+
+    .media-image {
+      width: 100%;
+      max-height: 460px;
+      object-fit: contain;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: #f8fafc;
+    }
+
+    .embed-box {
+      width: 100%;
+      overflow: auto;
+      border: 1px dashed var(--line);
+      border-radius: 14px;
+      padding: 8px;
+      background: #fafafa;
+    }
+
+    .match-teams {
+      display: grid;
+      gap: 4px;
+      font-weight: 850;
+    }
+
+    .score {
+      display: inline-flex;
+      width: fit-content;
+      border-radius: 12px;
+      background: #e0f2fe;
+      color: #075985;
+      padding: 6px 10px;
+      font-weight: 900;
+    }
+
+    .empty-state {
+      border: 1px dashed var(--line);
+      border-radius: 18px;
+      color: var(--muted);
+      padding: 18px;
+      background: rgba(255, 255, 255, 0.7);
+    }
+
+    .hidden { display: none !important; }
+
+    @media (max-width: 1120px) {
+      .layout { grid-template-columns: 1fr; }
+      .filters { position: static; }
+    }
+
+    @media (max-width: 620px) {
+      .page { padding: 16px; }
+      .filter-grid { grid-template-columns: 1fr; }
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <h1>Social Wall Debug</h1>
+      <p>Static one-page dashboard for local society accounts, collected public posts, and competition results. Serve it from the repository root so the browser can fetch <code>data/posts.json</code>.</p>
+    </header>
+
+    <div id="loading" class="notice">Loading <strong>data/posts.json</strong>…</div>
+    <div id="error" class="notice error hidden" role="alert"></div>
+
+    <section id="app" class="hidden" aria-live="polite">
+      <div id="summary" class="summary-grid"></div>
+
+      <section class="filters" aria-label="Filters">
+        <h2>Filters</h2>
+        <div class="filter-grid">
+          <label>Society
+            <select id="filterSociety"></select>
+          </label>
+          <label>Platform
+            <select id="filterPlatform">
+              <option value="all">All platforms</option>
+              <option value="website">Website</option>
+              <option value="facebook">Facebook</option>
+              <option value="instagram">Instagram</option>
+              <option value="youtube">YouTube</option>
+            </select>
+          </label>
+          <label>Post status
+            <select id="filterStatus"></select>
+          </label>
+          <label>Date from
+            <input id="filterDateFrom" type="date">
+          </label>
+          <label>Date to
+            <input id="filterDateTo" type="date">
+          </label>
+          <label>Text search
+            <input id="filterSearch" type="search" placeholder="Society, post text, team…">
+          </label>
+          <label id="competitionFilterWrap">Competition code
+            <select id="filterCompetition"></select>
+          </label>
+          <button id="resetFilters" type="button">Reset filters</button>
+        </div>
+        <div class="debug-bar">
+          <span id="visiblePosts" class="debug-pill">Visible posts: 0</span>
+          <span id="visibleMatches" class="debug-pill">Visible matches: 0</span>
+          <span id="visibleSocieties" class="debug-pill">Visible societies: 0</span>
+        </div>
+      </section>
+
+      <div class="layout">
+        <section class="section" aria-labelledby="societiesTitle">
+          <h2 id="societiesTitle">A. Societies/accounts</h2>
+          <div id="societiesList"></div>
+        </section>
+
+        <section class="section" aria-labelledby="feedTitle">
+          <h2 id="feedTitle">B. Feed</h2>
+          <div id="postsList"></div>
+          <div id="noPosts" class="empty-state hidden">No posts found for the selected filters.</div>
+        </section>
+
+        <section class="section" aria-labelledby="matchesTitle">
+          <h2 id="matchesTitle">C. Competition/results</h2>
+          <div id="matchesList"></div>
+          <div id="noMatches" class="empty-state hidden">No matches found for the selected filters.</div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      'use strict';
+
+      const DATA_URL = 'data/posts.json';
+      const PLATFORM_LABELS = {
+        website: 'Website',
+        facebook: 'Facebook',
+        instagram: 'Instagram',
+        youtube: 'YouTube'
+      };
+
+      const state = {
+        payload: null,
+        societies: [],
+        accounts: [],
+        posts: [],
+        matches: []
+      };
+
+      const els = {
+        loading: document.getElementById('loading'),
+        error: document.getElementById('error'),
+        app: document.getElementById('app'),
+        summary: document.getElementById('summary'),
+        filterSociety: document.getElementById('filterSociety'),
+        filterPlatform: document.getElementById('filterPlatform'),
+        filterStatus: document.getElementById('filterStatus'),
+        filterDateFrom: document.getElementById('filterDateFrom'),
+        filterDateTo: document.getElementById('filterDateTo'),
+        filterSearch: document.getElementById('filterSearch'),
+        competitionFilterWrap: document.getElementById('competitionFilterWrap'),
+        filterCompetition: document.getElementById('filterCompetition'),
+        resetFilters: document.getElementById('resetFilters'),
+        visiblePosts: document.getElementById('visiblePosts'),
+        visibleMatches: document.getElementById('visibleMatches'),
+        visibleSocieties: document.getElementById('visibleSocieties'),
+        societiesList: document.getElementById('societiesList'),
+        postsList: document.getElementById('postsList'),
+        matchesList: document.getElementById('matchesList'),
+        noPosts: document.getElementById('noPosts'),
+        noMatches: document.getElementById('noMatches')
+      };
+
+      function asArray(value) {
+        return Array.isArray(value) ? value : [];
+      }
+
+      function valueOf(row, key) {
+        if (!row || row[key] === null || row[key] === undefined) {
+          return '';
+        }
+        return String(row[key]).trim();
+      }
+
+      function lower(value) {
+        return String(value || '').toLowerCase();
+      }
+
+      function display(value, fallback) {
+        const text = String(value || '').trim();
+        return text || fallback || '—';
+      }
+
+      function normalizedDate(value) {
+        const text = String(value || '').trim();
+        const candidate = text.slice(0, 10);
+        return /^\d{4}-\d{2}-\d{2}$/.test(candidate) ? candidate : '';
+      }
+
+      function dateOrdinal(value) {
+        const date = normalizedDate(value);
+        if (!date) {
+          return null;
+        }
+        const parsed = Date.parse(date + 'T00:00:00Z');
+        return Number.isNaN(parsed) ? null : parsed;
+      }
+
+      function sortPostsByDate(posts) {
+        return posts.slice().sort((a, b) => {
+          const aTime = dateOrdinal(a.post_date);
+          const bTime = dateOrdinal(b.post_date);
+          if (aTime === null && bTime === null) {
+            return valueOf(a, 'post_url').localeCompare(valueOf(b, 'post_url'));
+          }
+          if (aTime === null) return 1;
+          if (bTime === null) return -1;
+          return bTime - aTime;
+        });
+      }
+
+      function uniqueSorted(values) {
+        return Array.from(new Set(values.map(String).map(v => v.trim()).filter(Boolean)))
+          .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+      }
+
+      function appendText(parent, tag, text, className) {
+        const node = document.createElement(tag);
+        if (className) {
+          node.className = className;
+        }
+        node.textContent = text;
+        parent.appendChild(node);
+        return node;
+      }
+
+      function appendLink(parent, href, text, className) {
+        if (!href) {
+          return null;
+        }
+        const link = document.createElement('a');
+        link.href = href;
+        link.textContent = text || href;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        if (className) {
+          link.className = className;
+        }
+        parent.appendChild(link);
+        return link;
+      }
+
+      function fillSelect(select, values, allLabel) {
+        select.replaceChildren();
+        const all = document.createElement('option');
+        all.value = 'all';
+        all.textContent = allLabel;
+        select.appendChild(all);
+        values.forEach(value => {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = value;
+          select.appendChild(option);
+        });
+      }
+
+      function countBy(rows, key) {
+        return rows.reduce((acc, row) => {
+          const name = valueOf(row, key) || 'unknown';
+          acc[name] = (acc[name] || 0) + 1;
+          return acc;
+        }, {});
+      }
+
+      function formatCounts(counts) {
+        const entries = Object.entries(counts || {}).sort((a, b) => a[0].localeCompare(b[0]));
+        return entries.length ? entries.map(([key, value]) => key + ': ' + value).join(' · ') : 'None';
+      }
+
+      function addMetric(label, value, small) {
+        const metric = document.createElement('article');
+        metric.className = 'metric';
+        appendText(metric, 'span', label, 'label');
+        appendText(metric, 'span', value, small ? 'small-value' : 'value');
+        els.summary.appendChild(metric);
+      }
+
+      function renderSummary() {
+        const summary = state.payload.summary && typeof state.payload.summary === 'object' ? state.payload.summary : {};
+        els.summary.replaceChildren();
+        addMetric('Generated at', display(state.payload.generated_at, 'Unknown'), true);
+        addMetric('Societies', String(summary.societies ?? state.societies.length));
+        addMetric('Accounts', String(summary.accounts ?? state.accounts.length));
+        addMetric('Posts', String(summary.posts ?? state.posts.length));
+        addMetric('Matches', String(summary.matches ?? state.matches.length));
+        addMetric('Accounts by platform', formatCounts(summary.accounts_by_platform || countBy(state.accounts, 'platform')), true);
+        addMetric('Posts by platform', formatCounts(summary.posts_by_platform || countBy(state.posts, 'platform')), true);
+        addMetric('Counts by post status', formatCounts(summary.posts_by_status || countBy(state.posts, 'status')), true);
+      }
+
+      function setupFilters() {
+        fillSelect(els.filterSociety, uniqueSorted(state.societies.map(row => valueOf(row, 'societa'))), 'All societies');
+        fillSelect(els.filterStatus, uniqueSorted(state.posts.map(row => valueOf(row, 'status'))), 'All statuses');
+
+        const competitionCodes = uniqueSorted(state.matches.map(row => valueOf(row, 'competition_code')));
+        if (state.matches.length > 0) {
+          els.competitionFilterWrap.classList.remove('hidden');
+          fillSelect(els.filterCompetition, competitionCodes, 'All competitions');
+        } else {
+          els.competitionFilterWrap.classList.add('hidden');
+          fillSelect(els.filterCompetition, [], 'All competitions');
+        }
+      }
+
+      function activeFilters() {
+        return {
+          society: els.filterSociety.value || 'all',
+          platform: els.filterPlatform.value || 'all',
+          status: els.filterStatus.value || 'all',
+          dateFrom: els.filterDateFrom.value || '',
+          dateTo: els.filterDateTo.value || '',
+          search: lower(els.filterSearch.value),
+          competition: els.filterCompetition.value || 'all'
+        };
+      }
+
+      function textMatches(row, keys, search) {
+        if (!search) {
+          return true;
+        }
+        return keys.some(key => lower(valueOf(row, key)).includes(search));
+      }
+
+      function inDateRange(value, dateFrom, dateTo) {
+        if (!dateFrom && !dateTo) {
+          return true;
+        }
+        const date = normalizedDate(value);
+        if (!date) {
+          return false;
+        }
+        if (dateFrom && date < dateFrom) {
+          return false;
+        }
+        if (dateTo && date > dateTo) {
+          return false;
+        }
+        return true;
+      }
+
+      function societySelectedMatch(row, selectedSociety) {
+        if (selectedSociety === 'all') {
+          return true;
+        }
+        const selected = lower(selectedSociety);
+        return lower(valueOf(row, 'societa')).includes(selected)
+          || lower(valueOf(row, 'home_team')).includes(selected)
+          || lower(valueOf(row, 'away_team')).includes(selected);
+      }
+
+      function postMatchesFilters(post, filters) {
+        return societySelectedMatch(post, filters.society)
+          && (filters.platform === 'all' || lower(valueOf(post, 'platform')) === filters.platform)
+          && (filters.status === 'all' || lower(valueOf(post, 'status')) === lower(filters.status))
+          && inDateRange(post.post_date, filters.dateFrom, filters.dateTo)
+          && textMatches(post, ['societa', 'platform', 'title', 'text', 'author', 'post_url', 'account_url', 'status', 'collection_method'], filters.search);
+      }
+
+      function accountMatchesFilters(account, filters) {
+        return societySelectedMatch(account, filters.society)
+          && (filters.platform === 'all' || lower(valueOf(account, 'platform')) === filters.platform)
+          && (filters.status === 'all' || lower(valueOf(account, 'status')) === lower(filters.status))
+          && textMatches(account, ['societa', 'platform', 'account_url', 'status', 'notes'], filters.search);
+      }
+
+      function societyMatchesFilters(society, filters, matchingAccounts) {
+        const nameMatches = societySelectedMatch(society, filters.society)
+          && textMatches(society, ['societa', 'source_detail_url', 'notes'], filters.search);
+        if (filters.platform !== 'all' || filters.status !== 'all') {
+          return matchingAccounts.some(account => valueOf(account, 'id_societa') === valueOf(society, 'id_societa')) && nameMatches;
+        }
+        return nameMatches;
+      }
+
+      function matchMatchesFilters(match, filters) {
+        return societySelectedMatch(match, filters.society)
+          && (filters.status === 'all' || lower(valueOf(match, 'status')) === lower(filters.status))
+          && (filters.competition === 'all' || valueOf(match, 'competition_code') === filters.competition)
+          && inDateRange(match.date, filters.dateFrom, filters.dateTo)
+          && textMatches(match, ['competition_code', 'match_id', 'home_team', 'away_team', 'result_text', 'venue', 'source_url', 'status'], filters.search);
+      }
+
+      function platformBadge(platform) {
+        const normalized = lower(platform) || 'unknown';
+        const badge = document.createElement('span');
+        badge.className = 'badge ' + (PLATFORM_LABELS[normalized] ? normalized : 'unknown');
+        badge.textContent = PLATFORM_LABELS[normalized] || display(platform, 'Unknown');
+        return badge;
+      }
+
+      function statusPill(status) {
+        const normalized = lower(status) || 'unknown';
+        const pill = document.createElement('span');
+        pill.className = 'status-pill ' + normalized.replace(/[^a-z0-9_-]/g, '-');
+        pill.textContent = display(status, 'unknown');
+        return pill;
+      }
+
+      function renderSocieties(societies, accounts) {
+        els.societiesList.replaceChildren();
+        if (!societies.length) {
+          appendText(els.societiesList, 'div', 'No societies found for the selected filters.', 'empty-state');
+          return;
+        }
+
+        const accountsBySociety = accounts.reduce((acc, account) => {
+          const key = valueOf(account, 'id_societa') || valueOf(account, 'societa');
+          if (!acc[key]) acc[key] = [];
+          acc[key].push(account);
+          return acc;
+        }, {});
+
+        societies.forEach(society => {
+          const card = document.createElement('article');
+          card.className = 'card society-card';
+
+          const head = document.createElement('div');
+          head.className = 'society-head';
+          const logoPath = valueOf(society, 'logo_path');
+          if (logoPath) {
+            const img = document.createElement('img');
+            img.className = 'logo';
+            img.src = logoPath;
+            img.alt = display(society.societa, 'Society') + ' logo';
+            head.appendChild(img);
+          } else {
+            const placeholder = document.createElement('div');
+            placeholder.className = 'logo logo-placeholder';
+            placeholder.textContent = display(society.societa, '?').slice(0, 1).toUpperCase();
+            head.appendChild(placeholder);
+          }
+
+          const titleWrap = document.createElement('div');
+          appendText(titleWrap, 'h3', display(society.societa, 'Unnamed society'));
+          appendText(titleWrap, 'div', 'ID: ' + display(society.id_societa, 'unknown'), 'meta');
+          head.appendChild(titleWrap);
+          card.appendChild(head);
+
+          const sourceUrl = valueOf(society, 'source_detail_url');
+          if (sourceUrl) {
+            const row = document.createElement('div');
+            row.className = 'link-row';
+            appendLink(row, sourceUrl, 'Source detail URL');
+            card.appendChild(row);
+          }
+
+          const buttonRow = document.createElement('div');
+          buttonRow.className = 'button-row';
+          const key = valueOf(society, 'id_societa') || valueOf(society, 'societa');
+          const societyAccounts = (accountsBySociety[key] || []).sort((a, b) => valueOf(a, 'platform').localeCompare(valueOf(b, 'platform')));
+          societyAccounts.forEach(account => {
+            const platform = lower(valueOf(account, 'platform')) || 'unknown';
+            appendLink(buttonRow, valueOf(account, 'account_url'), PLATFORM_LABELS[platform] || display(account.platform, 'Account'), 'account-button platform-' + platform);
+          });
+          if (buttonRow.children.length) {
+            card.appendChild(buttonRow);
+          } else {
+            appendText(card, 'div', 'No account links for current filters.', 'muted');
+          }
+          els.societiesList.appendChild(card);
+        });
+      }
+
+      function renderPostMedia(card, post) {
+        const platform = lower(valueOf(post, 'platform'));
+        const postId = valueOf(post, 'post_id');
+        const embedHtml = valueOf(post, 'embed_html');
+        const screenshotPath = valueOf(post, 'screenshot_path');
+        const thumbnailUrl = valueOf(post, 'thumbnail_url');
+
+        if (platform === 'youtube' && postId) {
+          const iframe = document.createElement('iframe');
+          iframe.className = 'media-frame';
+          iframe.src = 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(postId);
+          iframe.title = display(post.title, 'YouTube video');
+          iframe.loading = 'lazy';
+          iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
+          iframe.allowFullscreen = true;
+          card.appendChild(iframe);
+          return;
+        }
+
+        if (embedHtml) {
+          const box = document.createElement('div');
+          box.className = 'embed-box';
+          box.innerHTML = embedHtml;
+          card.appendChild(box);
+          return;
+        }
+
+        const imageUrl = screenshotPath || thumbnailUrl;
+        if (imageUrl) {
+          const img = document.createElement('img');
+          img.className = 'media-image';
+          img.src = imageUrl;
+          img.alt = display(post.title || post.text, 'Post media');
+          img.loading = 'lazy';
+          card.appendChild(img);
+          return;
+        }
+
+        appendText(card, 'div', 'Text-only fallback: no embeddable media, screenshot, or thumbnail is available.', 'muted');
+      }
+
+      function renderPosts(posts) {
+        els.postsList.replaceChildren();
+        els.noPosts.classList.toggle('hidden', posts.length !== 0);
+        posts.forEach(post => {
+          const card = document.createElement('article');
+          card.className = 'card post-card';
+
+          const meta = document.createElement('div');
+          meta.className = 'meta-row';
+          meta.appendChild(platformBadge(post.platform));
+          meta.appendChild(statusPill(post.status));
+          appendText(meta, 'span', display(post.post_date, 'Unknown date'), 'meta');
+          card.appendChild(meta);
+
+          appendText(card, 'div', display(post.societa, 'Unknown society'), 'meta');
+          appendText(card, 'div', display(post.title, 'Untitled post'), 'post-title');
+          if (valueOf(post, 'text')) {
+            appendText(card, 'p', valueOf(post, 'text'), 'post-text');
+          }
+
+          renderPostMedia(card, post);
+
+          const links = document.createElement('div');
+          links.className = 'link-row';
+          appendLink(links, valueOf(post, 'post_url'), 'Original post');
+          appendLink(links, valueOf(post, 'account_url'), 'Account URL');
+          if (links.children.length) {
+            card.appendChild(links);
+          }
+
+          const details = document.createElement('div');
+          details.className = 'meta';
+          details.textContent = 'Collection method: ' + display(post.collection_method, 'unknown');
+          if (valueOf(post, 'error_message')) {
+            details.textContent += ' · Error: ' + valueOf(post, 'error_message');
+          }
+          card.appendChild(details);
+
+          els.postsList.appendChild(card);
+        });
+      }
+
+      function renderMatches(matches) {
+        els.matchesList.replaceChildren();
+        els.noMatches.classList.toggle('hidden', matches.length !== 0);
+        matches.forEach(match => {
+          const card = document.createElement('article');
+          card.className = 'card match-card';
+
+          const meta = document.createElement('div');
+          meta.className = 'meta-row';
+          meta.appendChild(statusPill(match.status));
+          appendText(meta, 'span', 'Competition: ' + display(match.competition_code, 'unknown'), 'meta');
+          appendText(meta, 'span', display(match.date, 'Unknown date') + ' ' + display(match.time, ''), 'meta');
+          card.appendChild(meta);
+
+          const teams = document.createElement('div');
+          teams.className = 'match-teams';
+          appendText(teams, 'span', display(match.home_team, 'Home team'));
+          appendText(teams, 'span', 'vs', 'muted');
+          appendText(teams, 'span', display(match.away_team, 'Away team'));
+          card.appendChild(teams);
+
+          const result = valueOf(match, 'result_text') || [valueOf(match, 'home_score'), valueOf(match, 'away_score')].filter(Boolean).join(' - ');
+          appendText(card, 'div', display(result, 'Result unavailable'), 'score');
+          appendText(card, 'div', 'Venue: ' + display(match.venue, 'unknown'), 'meta');
+          appendLink(card, valueOf(match, 'source_url'), 'Source URL');
+          els.matchesList.appendChild(card);
+        });
+      }
+
+      function applyFilters() {
+        const filters = activeFilters();
+        const matchingAccounts = state.accounts.filter(account => accountMatchesFilters(account, filters));
+        const matchingSocieties = state.societies.filter(society => societyMatchesFilters(society, filters, matchingAccounts));
+        const matchingPosts = sortPostsByDate(state.posts.filter(post => postMatchesFilters(post, filters)));
+        const matchingMatches = state.matches.filter(match => matchMatchesFilters(match, filters));
+
+        els.visiblePosts.textContent = 'Visible posts: ' + matchingPosts.length;
+        els.visibleMatches.textContent = 'Visible matches: ' + matchingMatches.length;
+        els.visibleSocieties.textContent = 'Visible societies: ' + matchingSocieties.length;
+
+        renderSocieties(matchingSocieties, matchingAccounts);
+        renderPosts(matchingPosts);
+        renderMatches(matchingMatches);
+      }
+
+      function resetFilters() {
+        els.filterSociety.value = 'all';
+        els.filterPlatform.value = 'all';
+        els.filterStatus.value = 'all';
+        els.filterDateFrom.value = '';
+        els.filterDateTo.value = '';
+        els.filterSearch.value = '';
+        els.filterCompetition.value = 'all';
+        applyFilters();
+      }
+
+      function wireEvents() {
+        [
+          els.filterSociety,
+          els.filterPlatform,
+          els.filterStatus,
+          els.filterDateFrom,
+          els.filterDateTo,
+          els.filterSearch,
+          els.filterCompetition
+        ].forEach(input => input.addEventListener('input', applyFilters));
+        els.resetFilters.addEventListener('click', resetFilters);
+      }
+
+      function validatePayload(payload) {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+          throw new Error('Expected a JSON object with generated_at, summary, societies, accounts, posts and matches.');
+        }
+        return payload;
+      }
+
+      async function loadData() {
+        try {
+          const response = await fetch(DATA_URL, { cache: 'no-store' });
+          if (!response.ok) {
+            throw new Error('Could not load ' + DATA_URL + ' (HTTP ' + response.status + '). Run the export command first and serve this directory with python3 -m http.server 8000.');
+          }
+          const payload = validatePayload(await response.json());
+          state.payload = payload;
+          state.societies = asArray(payload.societies);
+          state.accounts = asArray(payload.accounts);
+          state.posts = asArray(payload.posts);
+          state.matches = asArray(payload.matches);
+
+          renderSummary();
+          setupFilters();
+          wireEvents();
+          applyFilters();
+
+          els.loading.classList.add('hidden');
+          els.app.classList.remove('hidden');
+        } catch (error) {
+          els.loading.classList.add('hidden');
+          els.error.classList.remove('hidden');
+          els.error.textContent = 'Unable to load the social wall data: ' + (error && error.message ? error.message : String(error));
+        }
+      }
+
+      loadData();
+    }());
+  </script>
+</body>
+</html>
